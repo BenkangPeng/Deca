@@ -1,0 +1,94 @@
+"""
+GEMM operator implementation
+"""
+import tvm
+from tvm.script import tir as T
+from tvm.script import ir as I
+from Op import Operator
+from utils.helper import dim3
+
+
+def create_gemm_ir_module(M: int, N: int, K: int):
+    @I.ir_module
+    class GEMM_IRModule:
+        @T.prim_func
+        def main(a: T.handle, b: T.handle, c: T.handle):
+            T.func_attr({"global_symbol": "main", "tir.noalias": True})
+            A = T.match_buffer(a, [M, K], dtype="float32")
+            B = T.match_buffer(b, [K, N], dtype="float32")
+            C = T.match_buffer(c, [M, N], dtype="float32")
+            for i, j, k in T.grid(M, N, K):
+                with T.block("C"):
+                    vi, vj, vk = T.axis.remap("SSR", [i, j, k])
+                    with T.init():
+                        C[vi, vj] = 0.0
+                    C[vi, vj] = C[vi, vj] + A[vi, vk] * B[vk, vj]
+    return GEMM_IRModule
+
+
+class GEMM(Operator):
+    def __init__(self, M: int, N: int, K: int):
+        self.M = M
+        self.N = N
+        self.K = K
+        self.ir_module = create_gemm_ir_module(M, N, K)
+        self.sch = tvm.tir.Schedule(self.ir_module)
+        super().__init__(name="GEMM")
+
+    def apply(self, rtile0: list, rtile1: list, rtile2: list):
+        """
+        Args:
+            rtile0: list of int, the tile size of the shared memory
+            rtile1: list of int, the tile size of the register level
+            rtile2: list of int, the tile size of the third dimension
+        """
+        gridDim = dim3(x=self.N//rtile0[1] , y = self.M//rtile0[0], z=1)
+        blockDim = dim3(x=rtile0[1]//rtile1[1], y=rtile0[0]//rtile1[0], z=1)
+        GRID_SIZE_X = gridDim.x * gridDim.y
+        BLOCK_SIZE_X = blockDim.x * blockDim.y
+        RM, RN, RK = rtile1
+        BK = rtile0[2]
+
+        sch = self.sch
+        block_C = sch.get_block("C")
+        block_shared_A = sch.cache_read(block_C, 0, "shared")
+        block_shared_B = sch.cache_read(block_C, 1, "shared")
+        block_local_C = sch.cache_write(block_C, 0, "local")
+
+        i, j, k = sch.get_loops(block_C)
+        by, vy, ty = sch.split(i, factors=[gridDim.y, RM, blockDim.y])
+        bx, vx, tx = sch.split(j, factors=[gridDim.x, RN, blockDim.x])
+        sch.reorder(by, bx, vy, vx, ty, tx, k)
+        blockIdx_x = sch.fuse(by, bx)
+        threadIdx_x = sch.fuse(ty, tx)
+
+        sch.bind(blockIdx_x, "blockIdx.x")
+        sch.bind(vy, "vthread.x")
+        sch.bind(vx, "vthread.y")
+        sch.bind(threadIdx_x, "threadIdx.x")
+        k0, k1 = sch.split(k, factors=[None, BK])
+
+        sch.compute_at(block_shared_A, k0)
+        sch.compute_at(block_shared_B, k0)
+        sch.reverse_compute_at(block_local_C, threadIdx_x)
+        sch.decompose_reduction(block_C, threadIdx_x)
+
+        # threads in the same threadblock collaboratively load A tile(BM x BK) to shared memory
+        ax0, ax1 = sch.get_loops(block_shared_A)[-2:]
+        ax_fused = sch.fuse(ax0, ax1)
+        ax_unroll, ax_trd, ax1_vec = sch.split(ax_fused, factors=[None, BLOCK_SIZE_X, 4])
+        sch.unroll(ax_unroll)
+        sch.bind(ax_trd, "threadIdx.x")
+        sch.vectorize(ax1_vec)
+
+        # threads in the same threadblock collaboratively load B tile(BK x BN) to shared memory
+        ax0, ax1 = sch.get_loops(block_shared_B)[-2:]
+        # sch.reorder(ax1, ax0)
+        ax_fused = sch.fuse(ax0, ax1)
+        ax_outer, ax_mid, ax_inner = sch.split(ax_fused, factors=[None, BLOCK_SIZE_X, 4])
+        sch.unroll(ax_outer)
+        sch.bind(ax_mid, "threadIdx.x")
+        sch.vectorize(ax_inner)
+
+        return sch
+
