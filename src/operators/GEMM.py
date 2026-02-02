@@ -27,7 +27,13 @@ def create_gemm_ir_module(M: int, N: int, K: int):
 
 
 class GEMM(Operator):
-    def __init__(self, M: int, N: int, K: int):
+    def __init__(self, M: int, N: int, K: int, name: str = "GEMM"):
+        """
+        Args:
+            M: int, the number of rows of the matrix A
+            N: int, the number of columns of the matrix B
+            K: int, the number of columns of the matrix A and the number of rows of the matrix B
+        """
         self.M = M
         self.N = N
         self.K = K
@@ -92,3 +98,18 @@ class GEMM(Operator):
 
         return sch
 
+
+    def compute0(self):
+        """
+            register level compute
+        """
+        pass
+
+    def get_reg_level0(self):
+        """
+        Return used register number of level 0
+        """
+        pass
+
+    def get_mem_level1(self):
+        pass
