@@ -78,29 +78,31 @@ def solve_shared(smem_size, num_regs, rtile0, type_size=4, count=5):
     s = Solver()
 
     bm, bn, bk = BitVecs("bm bn bk", 64)
+    s.add(Or(bk == 8, bk == 16, bk == 32))
     rm, rn, rk = rtile0
     smem = BitVecVal(smem_size, 64)
 
-    # Constraits 1: each threadblock can use at most num_regs registers
+    # Constraits 1: each threadblock can use at most `num_regs` registers
     num_threads = UDiv(bm, rm) * UDiv(bn, rn)  # number of threads in a threadblock
-    reg_usage_each_thread = (rm * rk + rn * rk + rm * rn) * type_size / 4
+    reg_usage_each_thread = (rm * rk + rn * rk + rm * rn) * type_size / 4 # each register can store 4 bytes of data
     reg_usage_total = num_threads * reg_usage_each_thread
     s.add(ULE(reg_usage_total, num_regs))
+    s.add(num_threads % 128 == 0) # Align with hardware: each threadblock has integer multiple of 128(warp_size * compute_sm_partition) threads
 
     for var in [bm, bn, bk]:
         s.add(UGT(var, 0))
         s.add(var & (var - 1) == 0)
         s.add(ULT(var, smem))
 
+    # Constraits 2: the total size of the shared memory used by the threadblock is not too small or too large
     total = (
         (bm * bk) + (bn * bk)
     ) * type_size  # Not sure that whether we should add (bm * bn) to the total
-    s.add(UGT(total, smem / 4))
+    s.add(UGT(total, smem / 8)) # don't want too small rtile1
     s.add(ULE(total, smem))
 
     s.add(Or(bm == bn, bm == (bn >> 1), bn == (bm >> 1)))
     s.add(And(bm > bk, bn > bk))
-    # s.add(IsComputeIntensive([bm, bn, bk], K))
 
     results = []
     for i in range(count):
