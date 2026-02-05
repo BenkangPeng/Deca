@@ -44,4 +44,6 @@ if __name__ == "__main__":
     compute1 = Compute(0, arch, type_size=4)
     rtiles0_all = compute1.solve()
     compute = Compute(1, arch, type_size=4, rtiles0_all=rtiles0_all)
-    print(compute.solve())
+    compute_patterns = compute.solve()
+    print(f'Find {len(compute_patterns)} compute patterns')
+    print(compute_patterns)

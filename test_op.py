@@ -1,27 +1,41 @@
 from operators.GEMM import GEMM
 import tvm
 import numpy as np
+from RuntimeMod import RuntimeMod
+from arch.RTX4090 import RTX4090
+from Compute import Compute
+# from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+
+
+def build_wrapper(runtime_mod: RuntimeMod):
+    runtime_mod.build()
+    return runtime_mod.record
 
 
 def test_gemm():
-    dtype = "float32"
-    M, N, K = 2048, 4096, 1024
-    gemm = GEMM(M, N, K)
-    sch = gemm.apply([128, 128, 8], [16, 8, 1], [1, 1, 1])
+    arch = RTX4090()
+    M, N, K = 512, 4096, 1024
+    # gemm = GEMM(M, N, K, dtype="float32", name="GEMM")
 
-    ctx = tvm.cuda(0)
-    cuda_mod = tvm.build(sch.mod, target="cuda")
-    cuda_a = tvm.nd.array(np.arange(M * K).reshape((M, K)).astype(dtype), ctx)
-    cuda_b = tvm.nd.array(np.arange(K * N).reshape((K, N)).astype(dtype), ctx)
-    cuda_c = tvm.nd.array(np.zeros((M, N)).astype(dtype), ctx)
+    compute1 = Compute(0, arch, type_size=4)
+    rtiles0_all = compute1.solve()
+    compute = Compute(1, arch, type_size=4, rtiles0_all=rtiles0_all)
+    compute_patterns = compute.solve()
+    print(f"Find {len(compute_patterns)} compute patterns")
+    print(compute_patterns)
 
-    num_flops = M * N * K * 2
-    num_runs = 6
-    timer_cuda_mod = cuda_mod.time_evaluator(cuda_mod.entry_name, ctx, number=num_runs)
-    t = timer_cuda_mod(cuda_a, cuda_b, cuda_c).mean
-    print(f"CUDA GEMM time: {t} seconds")
-    print(f"CUDA GEMM throughput: {num_flops / t / 1e12} TFLOPS")
+    runtime_mods = []
+    for compute_pattern in compute_patterns:
+        gemm = GEMM(M, N, K, dtype="float32", name="GEMM")
+        runtime_mods.append(RuntimeMod(gemm, arch, compute_pattern))
 
+    # with ThreadPoolExecutor(max_workers=2) as executor:
+    #     executor.map(lambda runtime_mod: runtime_mod.build(), runtime_mods)
+
+    for runtime_mod in runtime_mods:
+        runtime_mod.build()
+        runtime_mod.time_evaluator()
+        print(runtime_mod.record)
 
 
 test_gemm()

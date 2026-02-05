@@ -4,7 +4,7 @@ GEMM operator implementation
 import tvm
 from tvm.script import tir as T
 from tvm.script import ir as I
-from Op import Operator
+from operators.Op import Operator
 from utils.helper import dim3
 
 
@@ -27,26 +27,30 @@ def create_gemm_ir_module(M: int, N: int, K: int):
 
 
 class GEMM(Operator):
-    def __init__(self, M: int, N: int, K: int, name: str = "GEMM"):
+    def __init__(self, M: int, N: int, K: int, dtype: str = "float32", name: str = "GEMM"):
         """
         Args:
             M: int, the number of rows of the matrix A
             N: int, the number of columns of the matrix B
             K: int, the number of columns of the matrix A and the number of rows of the matrix B
+            dtype: str, the data type of the matrix, "float32" or "float16"
+            name: str, the name of the operator
         """
         self.M = M
         self.N = N
         self.K = K
+        self.dtype = dtype
+        self.num_flops = M * N * K * 2 # May need a pass to collect the number of flops.
         self.ir_module = create_gemm_ir_module(M, N, K)
         self.sch = tvm.tir.Schedule(self.ir_module)
         super().__init__(name="GEMM")
 
-    def apply(self, rtile0: list, rtile1: list, rtile2: list):
+    def apply(self, rtile0: list|tuple, rtile1: list|tuple, rtile2: list|tuple):
         """
         Args:
-            rtile0: list of int, the tile size of the shared memory
-            rtile1: list of int, the tile size of the register level
-            rtile2: list of int, the tile size of the third dimension
+            rtile0: list|tuple of int, the tile size of the shared memory
+            rtile1: list|tuple of int, the tile size of the register level
+            rtile2: list|tuple of int, the tile size of the third dimension
         """
         gridDim = dim3(x=self.N//rtile0[1] , y = self.M//rtile0[0], z=1)
         blockDim = dim3(x=rtile0[1]//rtile1[1], y=rtile0[0]//rtile1[0], z=1)
