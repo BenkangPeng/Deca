@@ -1,3 +1,4 @@
+# Refer to https://github.com/ConvolutedDog/Roller/blob/main/arch/RTX4090.py
 from .Arch import *
 
 

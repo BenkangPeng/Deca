@@ -1,6 +1,8 @@
 from z3 import *
 from arch.RTX4090 import RTX4090
+
 # from utils.helper import IsComputeIntensive
+
 
 def solve_reg(num_regs, type_size=4, count=5):
     """
@@ -46,22 +48,27 @@ def solve_reg(num_regs, type_size=4, count=5):
     return results
 
 
-def IsComputeIntensive(rtile1, K, arch = RTX4090()):
+def IsComputeIntensive(rtile1, K, arch=RTX4090()):
     """
     return True if the schedule(shared memory level) is compute intensive
     K: int, the number of columns of the matrix A
     """
     compute_workload = rtile1[0] * rtile1[1] * rtile1[2] * (UDiv(K, rtile1[2]))
     compute_throughput = arch.peak_flops  # / self.arch.compute_max_core[0]
-    if False: # TODO: add tensor core support
+    if False:  # TODO: add tensor core support
         compute_throughput = arch.peak_tc_flops
     compute_latency = compute_workload / compute_throughput
 
-    memory_workload = (rtile1[0] * rtile1[2] + rtile1[1] * rtile1[2] + rtile1[0] * rtile1[1]) * (UDiv(K, rtile1[2])) * 4 # 4 bytes for fp32
+    memory_workload = (
+        (rtile1[0] * rtile1[2] + rtile1[1] * rtile1[2] + rtile1[0] * rtile1[1])
+        * (UDiv(K, rtile1[2]))
+        * 4
+    )  # 4 bytes for fp32
 
     memory_throughput = arch.memory_bw(0)
     memory_latency = memory_workload / memory_throughput
     return compute_latency > memory_latency
+
 
 def solve_shared(smem_size, num_regs, rtile0, type_size=4, count=5):
     """
@@ -84,10 +91,14 @@ def solve_shared(smem_size, num_regs, rtile0, type_size=4, count=5):
 
     # Constraits 1: each threadblock can use at most `num_regs` registers
     num_threads = UDiv(bm, rm) * UDiv(bn, rn)  # number of threads in a threadblock
-    reg_usage_each_thread = (rm * rk + rn * rk + rm * rn) * type_size / 4 # each register can store 4 bytes of data
+    reg_usage_each_thread = (
+        (rm * rk + rn * rk + rm * rn) * type_size / 4
+    )  # each register can store 4 bytes of data
     reg_usage_total = num_threads * reg_usage_each_thread
     s.add(ULE(reg_usage_total, num_regs))
-    s.add(num_threads % 128 == 0) # Align with hardware: each threadblock has integer multiple of 128(warp_size * compute_sm_partition) threads
+    s.add(
+        num_threads % 128 == 0
+    )  # Align with hardware: each threadblock has integer multiple of 128(warp_size * compute_sm_partition) threads
 
     for var in [bm, bn, bk]:
         s.add(UGT(var, 0))
@@ -98,7 +109,7 @@ def solve_shared(smem_size, num_regs, rtile0, type_size=4, count=5):
     total = (
         (bm * bk) + (bn * bk)
     ) * type_size  # Not sure that whether we should add (bm * bn) to the total
-    s.add(UGT(total, smem / 8)) # don't want too small rtile1
+    s.add(UGT(total, smem / 8))  # don't want too small rtile1
     s.add(ULE(total, smem))
 
     s.add(Or(bm == bn, bm == (bn >> 1), bn == (bm >> 1)))
@@ -119,5 +130,6 @@ def solve_shared(smem_size, num_regs, rtile0, type_size=4, count=5):
     return results
 
 
-print(solve_reg(255))
-print(solve_shared(49152, 65536, [16, 8, 1], type_size=4, count=40))
+if __name__ == "__main__":
+    print(solve_reg(255, type_size=4, count=5))
+    print(solve_shared(49152, 65536, [16, 8, 1], type_size=4, count=5))
