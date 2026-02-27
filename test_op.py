@@ -14,7 +14,7 @@ def build_wrapper(runtime_mod: RuntimeMod):
 
 def test_gemm():
     arch = RTX4090()
-    M, N, K = 512, 4096, 1024
+    M, N, K = 512, 512, 512
     # gemm = GEMM(M, N, K, dtype="float32", name="GEMM")
 
     compute1 = Compute(0, arch, type_size=4)
@@ -23,6 +23,7 @@ def test_gemm():
     compute_patterns = compute.solve()
     print(f"Find {len(compute_patterns)} compute patterns")
     print(compute_patterns)
+    exit()
 
     runtime_mods = []
     for compute_pattern in compute_patterns:

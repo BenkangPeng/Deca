@@ -28,9 +28,9 @@ def solve_reg(num_regs, type_size=4, count=5):
     used_reg = (
         (rm * rk + rn * rk + rm * rn) * type_size / 4
     )  # Each register can store 4 bytes of data
-    # used_reg > M / 2 && used_reg <= M
+    # used_reg > 0 && used_reg <= M
     s.add(ULE(used_reg, m_bv))
-    s.add(UGT(used_reg, m_bv >> 1))
+    s.add(UGT(used_reg, 0))
     s.add(Or(rm == rn, rm == rn >> 1, rn == rm >> 1))
 
     results = []
@@ -109,7 +109,7 @@ def solve_shared(smem_size, num_regs, rtile0, type_size=4, count=5):
     total = (
         (bm * bk) + (bn * bk)
     ) * type_size  # Not sure that whether we should add (bm * bn) to the total
-    s.add(UGT(total, smem / 8))  # don't want too small rtile1
+    s.add(UGT(total, 0))
     s.add(ULE(total, smem))
 
     s.add(Or(bm == bn, bm == (bn >> 1), bn == (bm >> 1)))
@@ -131,5 +131,5 @@ def solve_shared(smem_size, num_regs, rtile0, type_size=4, count=5):
 
 
 if __name__ == "__main__":
-    print(solve_reg(255, type_size=4, count=5))
-    print(solve_shared(49152, 65536, [16, 8, 1], type_size=4, count=5))
+    print(solve_reg(255, type_size=4, count=20))
+    print(solve_shared(49152, 65536, [4, 2, 1], type_size=4, count=40))
