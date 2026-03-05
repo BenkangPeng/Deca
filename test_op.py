@@ -14,7 +14,7 @@ def build_wrapper(runtime_mod: RuntimeMod):
 
 def test_gemm():
     arch = RTX4090()
-    M, N, K = 512, 512, 512
+    M, N, K = 4096, 4096, 1024
     # gemm = GEMM(M, N, K, dtype="float32", name="GEMM")
 
     compute1 = Compute(0, arch, type_size=4)
@@ -23,7 +23,7 @@ def test_gemm():
     compute_patterns = compute.solve()
     print(f"Find {len(compute_patterns)} compute patterns")
     print(compute_patterns)
-    exit()
+    # exit()
 
     runtime_mods = []
     for compute_pattern in compute_patterns:
@@ -33,10 +33,19 @@ def test_gemm():
     # with ThreadPoolExecutor(max_workers=2) as executor:
     #     executor.map(lambda runtime_mod: runtime_mod.build(), runtime_mods)
 
+    res = []
     for runtime_mod in runtime_mods:
-        runtime_mod.build()
-        runtime_mod.time_evaluator()
-        print(runtime_mod.record)
+        try:
+            runtime_mod.build()
+            runtime_mod.time_evaluator()
+            print(runtime_mod.record)
+            res.append((runtime_mod.throughput, runtime_mod.record))
+        except Exception as _:
+            print(f"{runtime_mod.compute_pattern} is not a valid compute pattern")
+            continue
+
+    res.sort(key=lambda x: x[0], reverse=True)
+    print(f'✅✅✅The best throughput config: runtime mod {res[0][1]},\n throughput: {res[0][0]} TFLOPS')
 
 
 test_gemm()
