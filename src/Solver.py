@@ -4,7 +4,7 @@ from arch.RTX4090 import RTX4090
 # from utils.helper import IsComputeIntensive
 
 
-def solve_reg(num_regs, type_size=4, count=5):
+def solve_reg(num_regs, type_size=4, count=20):
     """
     Solve the register tiling problem for the given number of registers.
     Args:

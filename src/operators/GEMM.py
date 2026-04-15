@@ -6,6 +6,7 @@ from tvm.script import tir as T
 from tvm.script import ir as I
 from operators.Op import Operator
 from utils.helper import dim3
+import math
 
 
 def create_gemm_ir_module(M: int, N: int, K: int):
@@ -36,12 +37,17 @@ class GEMM(Operator):
             dtype: str, the data type of the matrix, "float32" or "float16"
             name: str, the name of the operator
         """
+
+        # For unregular size, consider padding to the nearest power of 2
+        # self.M = (1 << (M-1).bit_length())
+        # self.N = (1 << (N-1).bit_length())
+        # self.K = (1 << (K-1).bit_length())
         self.M = M
         self.N = N
         self.K = K
         self.dtype = dtype
         self.num_flops = M * N * K * 2 # May need a pass to collect the number of flops.
-        self.ir_module = create_gemm_ir_module(M, N, K)
+        self.ir_module = create_gemm_ir_module(self.M, self.N, self.K)
         self.sch = tvm.tir.Schedule(self.ir_module)
         super().__init__(name="GEMM")
 
