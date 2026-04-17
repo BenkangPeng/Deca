@@ -107,19 +107,3 @@ class GEMM(Operator):
         sch.vectorize(ax_inner)
 
         return sch
-
-
-    def compute0(self):
-        """
-            register level compute
-        """
-        pass
-
-    def get_reg_level0(self):
-        """
-        Return used register number of level 0
-        """
-        pass
-
-    def get_mem_level1(self):
-        pass

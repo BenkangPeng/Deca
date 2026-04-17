@@ -97,7 +97,7 @@ def solve_shared(smem_size, num_regs, rtile0, type_size=4, count=5):
     reg_usage_total = num_threads * reg_usage_each_thread
     s.add(ULE(reg_usage_total, num_regs))
     s.add(
-        num_threads % 128 == 0
+        And(num_threads % 128 == 0, ULE(num_threads, 1024))
     )  # Align with hardware: each threadblock has integer multiple of 128(warp_size * compute_sm_partition) threads
 
     for var in [bm, bn, bk]:
