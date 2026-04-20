@@ -9,6 +9,14 @@ import os
 import time
 from datetime import datetime
 
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--shape", nargs="*", type=int, default=[4096, 4096, 4096])
+args = parser.parse_args()
+
+M, N, K = args.shape
+
 
 def build_wrapper(runtime_mod: RuntimeMod):
     runtime_mod.build()
@@ -59,7 +67,7 @@ def test_gemm():
     with open(log_path, "a") as f:
         f.write(f"DeCA GEMM: M = {M}, N = {N}, K = {K}, throughput: {res[0][0]} TFLOPS\n, runtime: {runtime} ms, compile time: {end_time - start_time} seconds\n\n")
 
-def test_CLayer(M, N, K):
+def test_CLayer():
     start_time = time.time()
     arch = RTX4090()
 
@@ -110,25 +118,4 @@ def test_CLayer(M, N, K):
 # test_CLayer()
 
 if __name__ == "__main__":
-    shapes = [
-        (1024, 1024, 1024),
-        (1024, 1024, 4096),
-        (1024, 4096, 1024),
-        (1024, 768, 768),
-        (1024, 768, 2304),
-        (1024, 768, 3072),
-        (1024, 2304, 2304),
-        (1024, 3072, 768),
-        (1024, 2304, 768),
-        (512,256,1024),
-        (1024, 1024, 1024),
-        (512, 4608, 1024),
-        (1024, 512, 1024),
-        (2048, 512, 1024),
-        (512, 1024, 1024),
-        (2048, 1024, 1024),
-        (512, 2048, 1024)
-    ]
-    for shape in shapes:
-        M, N, K = shape
-        test_CLayer(M, N, K)
+    test_CLayer()
