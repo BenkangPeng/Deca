@@ -12,14 +12,25 @@ from datetime import datetime
 import argparse
 
 from src.driver.driver import cal_theoretical_occupancy_tile
-from src.utils.helper import GPUDetector
+from src.utils.helper import GPUDetector, byte_size
 from typing import Any, Callable, List
+
+import os
+os.environ['OPENBLAS_NUM_THREADS'] = '4'
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--shape", nargs="*", type=int, default=[4096, 4096, 4096])
+# When using TC, data type should be "float16".
+parser.add_argument("--use_tc", dest="use_tc", action="store_true", default=False)
+# "float32" for CUDA Core, "float16" for Tensor Core.
+parser.add_argument("--dtype", type=str, default="float32")
 args = parser.parse_args()
 
 M, N, K = args.shape
+if args.use_tc:
+    assert args.dtype == "float16"
+else:
+    assert args.dtype == "float32"
 
 
 def build_wrapper(runtime_mod: RuntimeMod):
@@ -30,16 +41,13 @@ def build_wrapper(runtime_mod: RuntimeMod):
 def test_gemm():
     start_time = time.time()
     arch = GPUDetector.create_gpu_instance()
-    # M, N, K = 1024, 768, 768
-    # gemm = GEMM(M, N, K, dtype="float32", name="GEMM")
 
-    compute1 = Compute(0, arch, type_size=4)
+    compute1 = Compute(0, arch, type_size=byte_size(args.dtype))
     rtiles0_all = compute1.solve()
-    compute = Compute(1, arch, type_size=4, rtiles0_all=rtiles0_all)
+    compute = Compute(1, arch, type_size=byte_size(args.dtype), rtiles0_all=rtiles0_all)
     compute_patterns = compute.solve()
     print(f"Find {len(compute_patterns)} compute patterns")
     print(compute_patterns)
-    # exit()
 
     compute_patterns = sorted(
         compute_patterns,
@@ -48,11 +56,8 @@ def test_gemm():
     )
     runtime_mods = []
     for compute_pattern in compute_patterns:
-        gemm = GEMM(M, N, K, dtype="float32", name="GEMM")
+        gemm = GEMM(M, N, K, dtype=args.dtype, name="GEMM")
         runtime_mods.append(RuntimeMod(gemm, arch, compute_pattern))
-
-    # with ThreadPoolExecutor(max_workers=2) as executor:
-    #     executor.map(lambda runtime_mod: runtime_mod.build(), runtime_mods)
 
     res = []
     for runtime_mod in runtime_mods:
@@ -86,12 +91,12 @@ def test_CLayer():
     arch = GPUDetector.create_gpu_instance()
 
     # Register level
-    clayer_reg = CLayer(0, arch)
+    clayer_reg = CLayer(0, arch, use_tc=args.use_tc, shape=args.shape)
     rtiles0 = clayer_reg.solve()
     # print(f"Find {len(rtiles0)} rtiles0")
     # print(rtiles0)
 
-    clayer_shared = CLayer(1, arch, rtiles0=rtiles0)
+    clayer_shared = CLayer(1, arch, rtiles0=rtiles0, use_tc=args.use_tc, shape=args.shape)
     tile_patterns = clayer_shared.solve()
     print(f"Find {len(tile_patterns)} tile patterns")
     print(tile_patterns)
@@ -99,9 +104,9 @@ def test_CLayer():
     # 测试所有的 tile pattern 的 occupancy，waves 和 com_mem_ratio
     # for x in tile_patterns:
     #     waves, occupancy = cal_theoretical_occupancy_tile(*x[1], *x[0])
-    #     ratio = (x[-1][0] * x[-1][1] * x[-1][2] * (K // x[-1][2])) / ((x[-1][0] * x[-1][2] + x[-1][1] * x[-1][2] + x[-1][0] * x[-1][1]) * (K // x[-1][2]) * 4)
+    #     ratio = (x[-1][0] * x[-1][1] * x[-1][2] * (K // x[-1][2])) / ((x[-1][0] * x[-1][2] + x[-1][1] * x[-1][2] + x[-1][0] * x[-1][1]) * (K // x[-1][2]) * byte_size(args.dtype))
     #     print(f"[WAVES, OCC, COM_MEM_RATIO] {x[1]}, {x[0]}: waves: {waves}, occupancy: {occupancy}, ratio: {ratio}, ", end="")
-    #     gemm = GEMM(M, N, K, dtype="float32", name="GEMM")
+    #     gemm = GEMM(M, N, K, dtype=args.dtype, name="GEMM")
     #     try:
     #         rt_mod = RuntimeMod(gemm, arch, x)
     #         rt_mod.build()
@@ -116,7 +121,7 @@ def test_CLayer():
     AI = lambda x: (x[-1][0] * x[-1][1] * x[-1][2] * (K // x[-1][2])) / (
         (x[-1][0] * x[-1][2] + x[-1][1] * x[-1][2] + x[-1][0] * x[-1][1])
         * (K // x[-1][2])
-        * 4
+        * byte_size(args.dtype)
     )
     sorted_tile_patterns = sorted(tile_patterns, key=AI, reverse=True)
 
@@ -137,7 +142,7 @@ def test_CLayer():
     #     return (x[-1][0] * x[-1][1] * x[-1][2] * (K // x[-1][2])) / (
     #         (x[-1][0] * x[-1][2] + x[-1][1] * x[-1][2] + x[-1][0] * x[-1][1])
     #         * (K // x[-1][2])
-    #         * 4
+    #         * byte_size(args.dtype)
     #     )
 
     # 先按照 waves 降序排序，再按照 occupancy 降序排序
@@ -178,13 +183,13 @@ def test_CLayer():
     compute_patterns = sorted_tile_patterns[0:50]
     runtime_mods: List[RuntimeMod] = []
     for compute_pattern in compute_patterns:
-        gemm = GEMM(M, N, K, dtype="float32", name="GEMM")
-        rt_mod = RuntimeMod(gemm, arch, compute_pattern)
+        gemm = GEMM(M, N, K, dtype=args.dtype, name="GEMM")
+        rt_mod = RuntimeMod(gemm, arch, args.use_tc, compute_pattern)
         runtime_mods.append(rt_mod)
 
     res = []
     for runtime_mod in runtime_mods:
-        try:
+        # try:
             runtime_mod.build()
             runtime_mod.time_evaluator()
             print(runtime_mod.record)
@@ -196,9 +201,9 @@ def test_CLayer():
                     runtime_mod.get_sch(),
                 )
             )
-        except Exception as _:
-            print(f"{runtime_mod.compute_pattern} is not a valid compute pattern")
-            continue
+        # except Exception as _:
+        #     print(f"{runtime_mod.compute_pattern} is not a valid compute pattern")
+        #     continue
 
     end_time = time.time()
     runtime = 2 * M * K * N / res[0][0] / 1e9  # unit: ms

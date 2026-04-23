@@ -47,15 +47,15 @@ def cal_theoretical_occupancy(
     return max_resident_ctas, max_resident_warps / max_resident_warps_per_sm
 
 
-def cal_theoretical_occupancy_tile(BM, BN, BK, RM, RN, RK) -> float:
+def cal_theoretical_occupancy_tile(BM, BN, BK, RM, RN, RK, dtype: str) -> float:
     """Calculate theoretical occupancy for a given tile pattern."""
     assert (
         False
     ), "This function has some features not implemented yet (M, K, N, and arch)."
 
     config_size_kb = 64.0
-    shared_mem_per_cta_kb: float = float((BM * BK + BN * BK) * 4) / 1024.0
-    regs_per_cta = RM * RN * 4 / 4
+    shared_mem_per_cta_kb: float = float((BM * BK + BN * BK) * byte_size(dtype)) / 1024.0
+    regs_per_cta = RM * RN * byte_size(dtype) / 4
     assert BM % RM == 0
     assert BN % RN == 0
     block_size = (BM // RM) * (BN // RN)
