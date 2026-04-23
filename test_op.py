@@ -11,6 +11,10 @@ from datetime import datetime
 
 import argparse
 
+from src.driver.driver import cal_theoretical_occupancy_tile
+from src.utils.helper import GPUDetector
+from typing import Any, Callable, List
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--shape", nargs="*", type=int, default=[4096, 4096, 4096])
 args = parser.parse_args()
@@ -24,8 +28,8 @@ def build_wrapper(runtime_mod: RuntimeMod):
 
 
 def test_gemm():
-    start_time = time.time()    
-    arch = RTX4090()
+    start_time = time.time()
+    arch = GPUDetector.create_gpu_instance()
     # M, N, K = 1024, 768, 768
     # gemm = GEMM(M, N, K, dtype="float32", name="GEMM")
 
@@ -37,7 +41,11 @@ def test_gemm():
     print(compute_patterns)
     # exit()
 
-    compute_patterns = sorted(compute_patterns, key=lambda x: (x[-1][0] * x[-1][1]) / (x[-1][0] + x[-1][1]), reverse=False)
+    compute_patterns = sorted(
+        compute_patterns,
+        key=lambda x: (x[-1][0] * x[-1][1]) / (x[-1][0] + x[-1][1]),
+        reverse=False,
+    )
     runtime_mods = []
     for compute_pattern in compute_patterns:
         gemm = GEMM(M, N, K, dtype="float32", name="GEMM")
@@ -50,26 +58,32 @@ def test_gemm():
     for runtime_mod in runtime_mods:
         try:
             runtime_mod.build()
+            print("$" * 100, flush=True)
             runtime_mod.time_evaluator()
-            print(runtime_mod.record)
+            print(runtime_mod.record, flush=True)
             res.append((runtime_mod.throughput, runtime_mod.record))
         except Exception as _:
             print(f"{runtime_mod.compute_pattern} is not a valid compute pattern")
             continue
-    
+
     end_time = time.time()
 
     res.sort(key=lambda x: x[0], reverse=True)
-    print(f'✅✅✅The best throughput config: runtime mod {res[0][1]},\n throughput: {res[0][0]} TFLOPS')
+    print(
+        f"✅✅✅The best throughput config: runtime mod {res[0][1]},\n throughput: {res[0][0]} TFLOPS"
+    )
 
     log_path = os.path.join(os.path.dirname(__file__), "deca_performance.log")
-    runtime = 2 * M * K * N / res[0][0] / 1e9 # unit: ms
+    runtime = 2 * M * K * N / res[0][0] / 1e9  # unit: ms
     with open(log_path, "a") as f:
-        f.write(f"DeCA GEMM: M = {M}, N = {N}, K = {K}, throughput: {res[0][0]} TFLOPS\n, runtime: {runtime} ms, compile time: {end_time - start_time} seconds\n\n")
+        f.write(
+            f"DeCA GEMM: M = {M}, N = {N}, K = {K}, throughput: {res[0][0]} TFLOPS\n, runtime: {runtime} ms, compile time: {end_time - start_time} seconds\n\n"
+        )
+
 
 def test_CLayer():
     start_time = time.time()
-    arch = RTX4090()
+    arch = GPUDetector.create_gpu_instance()
 
     # Register level
     clayer_reg = CLayer(0, arch)
@@ -79,19 +93,94 @@ def test_CLayer():
 
     clayer_shared = CLayer(1, arch, rtiles0=rtiles0)
     tile_patterns = clayer_shared.solve()
-    # print(f"Find {len(tile_patterns)} tile patterns")
-    # print(tile_patterns)
+    print(f"Find {len(tile_patterns)} tile patterns")
+    print(tile_patterns)
 
-    AI = lambda x: (x[-1][0] * x[-1][1] * x[-1][2] * (K // x[-1][2])) / ((x[-1][0] * x[-1][2] + x[-1][1] * x[-1][2] + x[-1][0] * x[-1][1]) * (K // x[-1][2]) * 4)
+    # 测试所有的 tile pattern 的 occupancy，waves 和 com_mem_ratio
+    # for x in tile_patterns:
+    #     waves, occupancy = cal_theoretical_occupancy_tile(*x[1], *x[0])
+    #     ratio = (x[-1][0] * x[-1][1] * x[-1][2] * (K // x[-1][2])) / ((x[-1][0] * x[-1][2] + x[-1][1] * x[-1][2] + x[-1][0] * x[-1][1]) * (K // x[-1][2]) * 4)
+    #     print(f"[WAVES, OCC, COM_MEM_RATIO] {x[1]}, {x[0]}: waves: {waves}, occupancy: {occupancy}, ratio: {ratio}, ", end="")
+    #     gemm = GEMM(M, N, K, dtype="float32", name="GEMM")
+    #     try:
+    #         rt_mod = RuntimeMod(gemm, arch, x)
+    #         rt_mod.build()
+    #         rt_mod.time_evaluator()
+    #         print(rt_mod.throughput, flush=True)
+    #     except Exception as _:
+    #         print(f"0", flush=True)
+    #         continue
+    # exit()
+
+    # 按照计算访存比排序
+    AI = lambda x: (x[-1][0] * x[-1][1] * x[-1][2] * (K // x[-1][2])) / (
+        (x[-1][0] * x[-1][2] + x[-1][1] * x[-1][2] + x[-1][0] * x[-1][1])
+        * (K // x[-1][2])
+        * 4
+    )
     sorted_tile_patterns = sorted(tile_patterns, key=AI, reverse=True)
-    # print(f"The best tile pattern: {sorted_tile_patterns[0]} \n -----------------------\n")
-    # print(sorted_tile_patterns)
 
-    compute_patterns = sorted_tile_patterns[0:49]
-    runtime_mods = []
+    # 按照 occupancy 降序排序
+    # AI: Callable[..., float] = lambda x: cal_theoretical_occupancy_tile(*x[1], *x[0])[1]
+    # sorted_tile_patterns = sorted(tile_patterns, key=AI, reverse=True)
+
+    # 按照 waves 降序排序
+    # AI = lambda x: cal_theoretical_occupancy_tile(*x[1], *x[0])[0]
+    # sorted_tile_patterns = sorted(tile_patterns, key=AI, reverse=True)
+
+    # 辅助函数
+    # def compute_waves(x):
+    #     return cal_theoretical_occupancy_tile(*x[1], *x[0])[0]
+    # def compute_occupancy(x):
+    #     return cal_theoretical_occupancy_tile(*x[1], *x[0])[1]
+    # def compute_com_mem_ratio(x):
+    #     return (x[-1][0] * x[-1][1] * x[-1][2] * (K // x[-1][2])) / (
+    #         (x[-1][0] * x[-1][2] + x[-1][1] * x[-1][2] + x[-1][0] * x[-1][1])
+    #         * (K // x[-1][2])
+    #         * 4
+    #     )
+
+    # 先按照 waves 降序排序，再按照 occupancy 降序排序
+    # sorted_tile_patterns = sorted(tile_patterns, key=lambda x: (compute_waves(x), -compute_occupancy(x)), reverse=False)
+
+    # 按照 waves / 计算访存比排序 * occupancy 升序排序
+    # sorted_tile_patterns = sorted(tile_patterns, key=lambda x: (compute_waves(x) / (compute_occupancy(x) * compute_com_mem_ratio(x))), reverse=False)
+
+    # 按照归一化后的 waves / 计算访存比排序 * occupancy 升序排序
+    # def sort_tile_patterns(tile_patterns):
+    #     # 先计算所有原始值
+    #     computed = []
+    #     for tp in tile_patterns:
+    #         waves = compute_waves(tp)
+    #         occ = compute_occupancy(tp)
+    #         ratio = compute_com_mem_ratio(tp)
+    #         computed.append((tp, waves, occ, ratio))
+    #     # 提取值
+    #     waves_vals = [c[1] for c in computed]
+    #     occ_vals = [c[2] for c in computed]
+    #     ratio_vals = [c[3] for c in computed]
+    #     # 归一化到 [0, 1]
+    #     waves_min, waves_max = min(waves_vals), max(waves_vals)
+    #     occ_min, occ_max = min(occ_vals), max(occ_vals)
+    #     ratio_min, ratio_max = min(ratio_vals), max(ratio_vals)
+    #     def norm_waves(v): return (v - waves_min) / (waves_max - waves_min) if waves_max != waves_min else 0.5
+    #     def norm_occ(v): return (v - occ_min) / (occ_max - occ_min) if occ_max != occ_min else 0.5
+    #     def norm_ratio(v): return (v - ratio_min) / (ratio_max - ratio_min) if ratio_max != ratio_min else 0.5
+    #     # 归一化后计算分数：waves/(occ*ratio)，越小越好
+    #     sorted_patterns = sorted(
+    #         computed,
+    #         key=lambda x: norm_waves(x[1]) / (norm_occ(x[2]) * norm_ratio(x[3]) + 1e-9),
+    #         reverse=False  # 值越小越好
+    #     )
+    #     return [tp[0] for tp in sorted_patterns]
+    # sorted_tile_patterns = sort_tile_patterns(tile_patterns)
+
+    compute_patterns = sorted_tile_patterns[0:50]
+    runtime_mods: List[RuntimeMod] = []
     for compute_pattern in compute_patterns:
         gemm = GEMM(M, N, K, dtype="float32", name="GEMM")
-        runtime_mods.append(RuntimeMod(gemm, arch, compute_pattern))
+        rt_mod = RuntimeMod(gemm, arch, compute_pattern)
+        runtime_mods.append(rt_mod)
 
     res = []
     for runtime_mod in runtime_mods:
@@ -99,19 +188,31 @@ def test_CLayer():
             runtime_mod.build()
             runtime_mod.time_evaluator()
             print(runtime_mod.record)
-            res.append((runtime_mod.throughput, runtime_mod.record))
+            res.append(
+                (
+                    runtime_mod.throughput,
+                    runtime_mod.record,
+                    runtime_mod.get_mod(),
+                    runtime_mod.get_sch(),
+                )
+            )
         except Exception as _:
             print(f"{runtime_mod.compute_pattern} is not a valid compute pattern")
             continue
 
     end_time = time.time()
-    runtime = 2 * M * K * N / res[0][0] / 1e9 # unit: ms
+    runtime = 2 * M * K * N / res[0][0] / 1e9  # unit: ms
     res.sort(key=lambda x: x[0], reverse=True)
     log_path = os.path.join(os.path.dirname(__file__), "deca_performance.log")
     with open(log_path, "a") as f:
-        f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}:\n DeCA: M = {M}, N = {N}, K = {K}, throughput: {res[0][0]} TFLOPS\n, runtime: {runtime} ms, compile time: {end_time - start_time} seconds\n\n")
+        f.write(
+            f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}:\n DeCA: M = {M}, N = {N}, K = {K}, throughput: {res[0][0]} TFLOPS\n, runtime: {runtime} ms, compile time: {end_time - start_time} seconds\n\n"
+        )
 
-    print(f"✅✅✅ DeCA: M = {M}, N = {N}, K = {K}, throughput: {res[0][0]} TFLOPS\n, runtime: {runtime} ms, compile time: {end_time - start_time} seconds\n\n")
+    print(
+        f"✅✅✅ DeCA: M = {M}, N = {N}, K = {K}, throughput: {res[0][0]} TFLOPS\n, runtime: {runtime} ms, compile time: {end_time - start_time} seconds\n",
+        flush=True,
+    )
 
 
 # test_gemm()

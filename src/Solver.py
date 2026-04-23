@@ -1,8 +1,13 @@
+from typing import Any
+from z3.z3 import BitVecRef
 from z3 import *
 from arch.RTX4090 import RTX4090
+from arch.H100 import H100
+from arch.V100 import V100
 
-# from utils.helper import IsComputeIntensive
+from src.utils.helper import GPUDetector
 
+arch = GPUDetector.create_gpu_instance(verbose=False)
 
 def solve_reg(num_regs, type_size=4, count=20):
     """
@@ -18,20 +23,32 @@ def solve_reg(num_regs, type_size=4, count=20):
     # Each thread computes a tile of size rm x rn x rk
     rm, rn, rk = BitVecs("rm rn rk", 64)
 
-    m_bv = BitVecVal(num_regs, 64)
+    s.add(ULE(rm, 255))
+    s.add(ULE(rn, 255))
+
+    s.add(UGE(rm, 2))
+    s.add(UGE(rn, 2))
+
+    # m_bv = BitVecVal(num_regs, 64)
+    m_bv = num_regs
     # reduce dimension to 1
     s.add(rk == 1)
-    for var in [rm, rn, rk]:
+    for var in [rm, rn]:
         s.add(UGT(var, 0))
         s.add(var & (var - 1) == 0)
 
-    used_reg = (
-        (rm * rk + rn * rk + rm * rn) * type_size / 4
-    )  # Each register can store 4 bytes of data
+    # used_reg = (
+    #     (rm * rk + rn * rk + rm * rn) * type_size / 4
+    # )  # Each register can store 4 bytes of data
+    used_reg = (rm * rn) * type_size / 4
     # used_reg > 0 && used_reg <= M
     s.add(ULE(used_reg, m_bv))
     s.add(UGT(used_reg, 0))
-    s.add(Or(rm == rn, rm == rn >> 1, rn == rm >> 1))
+    # s.add(Or(rm == rn, rm == rn >> 1, rn == rm >> 1))
+
+    # print("=== 所有约束 ===")
+    # for a in s.assertions():
+    #     print(a)
 
     results = []
     for i in range(count):
@@ -82,49 +99,85 @@ def solve_shared(smem_size, num_regs, rtile0, type_size=4, count=5):
     Returns:
         list of tuples, each tuple contains the tiling sizes for the shared memory level
     """
-    s = Solver()
+    opt = Solver()
 
     bm, bn, bk = BitVecs("bm bn bk", 64)
-    s.add(Or(bk == 8, bk == 16, bk == 32))
+    opt.add(ULE(bm, 512))
+    opt.add(ULE(bn, 512))
+    opt.add(ULE(bk, 512))
+
+    ########################
     rm, rn, rk = rtile0
-    smem = BitVecVal(smem_size, 64)
+    opt.add(Or(bk == 8, bk == 16, bk == 32))
+    opt.add(And((UDiv(bm, rm)*UDiv(bn, rn))%32 == 0))
+    opt.add(Or(bm == bn, bm == bn >> 1, bn == bm >> 1))
+    opt.add(And(bm > bk, bn > bk))
+    ########################
+
+    opt.add(UGE(bn, bm))
+    # opt.add(ULT(bk, 16))
+
+    for var in [bm, bn, bk]:
+        opt.add(UGT(var, 0))
+        opt.add(var & (var - 1) == 0)
+        # opt.add(ULT(var, smem))
+
+    # opt.add(Or(bk == 8, bk == 16, bk == 32))
+    rm, rn, rk = rtile0
+
+    opt.add(bm % rm == 0)
+    opt.add(bn % rn == 0)
+    opt.add(bk % rk == 0)
+
+    # smem = BitVecVal(smem_size, 64)
+    smem: Any = smem_size
 
     # Constraits 1: each threadblock can use at most `num_regs` registers
     num_threads = UDiv(bm, rm) * UDiv(bn, rn)  # number of threads in a threadblock
-    reg_usage_each_thread = (
-        (rm * rk + rn * rk + rm * rn) * type_size / 4
-    )  # each register can store 4 bytes of data
-    reg_usage_total = num_threads * reg_usage_each_thread
-    s.add(ULE(reg_usage_total, num_regs))
-    s.add(
-        And(num_threads % 128 == 0, ULE(num_threads, 1024))
-    )  # Align with hardware: each threadblock has integer multiple of 128(warp_size * compute_sm_partition) threads
+    opt.add(num_threads % 32 == 0)
+    opt.add(ULE(num_threads, 1024))
 
-    for var in [bm, bn, bk]:
-        s.add(UGT(var, 0))
-        s.add(var & (var - 1) == 0)
-        s.add(ULT(var, smem))
+    # reg_usage_each_thread = (
+    #     (rm * rk + rn * rk + rm * rn) * type_size / 4
+    # )  # each register can store 4 bytes of data
+    reg_usage_each_thread = rm * rn * type_size / 4
+
+    reg_usage_total = num_threads * reg_usage_each_thread
+    opt.add(ULE(reg_usage_total, num_regs))
+    # opt.add(
+    #     And(num_threads % 128 == 0, ULE(num_threads, 1024))
+    # )  # Align with hardware: each threadblock has integer multiple of 128(warp_size * compute_sm_partition) threads    
 
     # Constraits 2: the total size of the shared memory used by the threadblock is not too small or too large
     total = (
         (bm * bk) + (bn * bk)
     ) * type_size  # Not sure that whether we should add (bm * bn) to the total
-    s.add(UGT(total, 0))
-    s.add(ULE(total, smem))
+    opt.add(UGT(total, 0))
+    opt.add(ULE(total, smem))
 
-    s.add(Or(bm == bn, bm == (bn >> 1), bn == (bm >> 1)))
-    s.add(And(bm > bk, bn > bk))
+    # opt.add(Or(bm == bn, bm == (bn >> 1), bn == (bm >> 1)))
+    # opt.add(And(bm > bk, bn > bk))
+
+    #######################
+
+    grid_size = UDiv(4096, bm) * UDiv(4096, bn)
+    sm_nums = arch.sm_nums
+    opt.add(UGE(grid_size, sm_nums))
+
+    # print("=== 所有约束 ===", flush=True)
+    # for a in opt.assertions():
+    #     print(a, flush=True)
 
     results = []
-    for i in range(count):
-        if s.check() == sat:
-            m = s.model()
+    for i in range(1000000):
+        if opt.check() == sat:
+            m = opt.model()
             res = (m[bm].as_long(), m[bn].as_long(), m[bk].as_long())
             results.append(res)
 
             # BLOCKING CLAUSE:
             # "Find a new solution where (a,b,c) is NOT the current (a,b,c)"
-            s.add(Or(bm != m[bm], bn != m[bn], bk != m[bk]))
+            opt.add(Or(bm != m[bm], bn != m[bn], bk != m[bk]))
         else:
             break
     return results
