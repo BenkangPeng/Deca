@@ -101,7 +101,7 @@ def test_CLayer():
     print(f"Find {len(tile_patterns)} tile patterns")
     print(tile_patterns)
 
-    # 测试所有的 tile pattern 的 occupancy，waves 和 com_mem_ratio
+    # Test the occupancy, waves and com_mem_ratio of all tile patterns
     # for x in tile_patterns:
     #     waves, occupancy = cal_theoretical_occupancy_tile(*x[1], *x[0])
     #     ratio = (x[-1][0] * x[-1][1] * x[-1][2] * (K // x[-1][2])) / ((x[-1][0] * x[-1][2] + x[-1][1] * x[-1][2] + x[-1][0] * x[-1][1]) * (K // x[-1][2]) * byte_size(args.dtype))
@@ -117,7 +117,7 @@ def test_CLayer():
     #         continue
     # exit()
 
-    # 按照计算访存比排序
+    # Sort by the compute memory ratio
     AI = lambda x: (x[-1][0] * x[-1][1] * x[-1][2] * (K // x[-1][2])) / (
         (x[-1][0] * x[-1][2] + x[-1][1] * x[-1][2] + x[-1][0] * x[-1][1])
         * (K // x[-1][2])
@@ -125,15 +125,15 @@ def test_CLayer():
     )
     sorted_tile_patterns = sorted(tile_patterns, key=AI, reverse=True)
 
-    # 按照 occupancy 降序排序
+    # Sort by occupancy in descending order
     # AI: Callable[..., float] = lambda x: cal_theoretical_occupancy_tile(*x[1], *x[0])[1]
     # sorted_tile_patterns = sorted(tile_patterns, key=AI, reverse=True)
 
-    # 按照 waves 降序排序
+    # Sort by waves in descending order
     # AI = lambda x: cal_theoretical_occupancy_tile(*x[1], *x[0])[0]
     # sorted_tile_patterns = sorted(tile_patterns, key=AI, reverse=True)
 
-    # 辅助函数
+    # Helper functions
     # def compute_waves(x):
     #     return cal_theoretical_occupancy_tile(*x[1], *x[0])[0]
     # def compute_occupancy(x):
@@ -145,37 +145,37 @@ def test_CLayer():
     #         * byte_size(args.dtype)
     #     )
 
-    # 先按照 waves 降序排序，再按照 occupancy 降序排序
+    # Sort by waves in descending order, then by occupancy in descending order
     # sorted_tile_patterns = sorted(tile_patterns, key=lambda x: (compute_waves(x), -compute_occupancy(x)), reverse=False)
 
-    # 按照 waves / 计算访存比排序 * occupancy 升序排序
+    # Sort by waves / compute memory ratio in descending order * occupancy in ascending order
     # sorted_tile_patterns = sorted(tile_patterns, key=lambda x: (compute_waves(x) / (compute_occupancy(x) * compute_com_mem_ratio(x))), reverse=False)
 
-    # 按照归一化后的 waves / 计算访存比排序 * occupancy 升序排序
+    # Sort by normalized waves / compute memory ratio in descending order * occupancy in ascending order
     # def sort_tile_patterns(tile_patterns):
-    #     # 先计算所有原始值
+    #     # Calculate all original values
     #     computed = []
     #     for tp in tile_patterns:
     #         waves = compute_waves(tp)
     #         occ = compute_occupancy(tp)
     #         ratio = compute_com_mem_ratio(tp)
     #         computed.append((tp, waves, occ, ratio))
-    #     # 提取值
+    #     # Extract values
     #     waves_vals = [c[1] for c in computed]
     #     occ_vals = [c[2] for c in computed]
     #     ratio_vals = [c[3] for c in computed]
-    #     # 归一化到 [0, 1]
+    #     # Normalize to [0, 1]
     #     waves_min, waves_max = min(waves_vals), max(waves_vals)
     #     occ_min, occ_max = min(occ_vals), max(occ_vals)
     #     ratio_min, ratio_max = min(ratio_vals), max(ratio_vals)
     #     def norm_waves(v): return (v - waves_min) / (waves_max - waves_min) if waves_max != waves_min else 0.5
     #     def norm_occ(v): return (v - occ_min) / (occ_max - occ_min) if occ_max != occ_min else 0.5
     #     def norm_ratio(v): return (v - ratio_min) / (ratio_max - ratio_min) if ratio_max != ratio_min else 0.5
-    #     # 归一化后计算分数：waves/(occ*ratio)，越小越好
+    #     # Calculate the score after normalization: waves/(occ*ratio), the smaller the better
     #     sorted_patterns = sorted(
     #         computed,
     #         key=lambda x: norm_waves(x[1]) / (norm_occ(x[2]) * norm_ratio(x[3]) + 1e-9),
-    #         reverse=False  # 值越小越好
+    #         reverse=False  # The smaller the better
     #     )
     #     return [tp[0] for tp in sorted_patterns]
     # sorted_tile_patterns = sort_tile_patterns(tile_patterns)

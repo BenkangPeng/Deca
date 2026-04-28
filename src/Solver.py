@@ -37,20 +37,20 @@ def solve_reg(
         s = Solver()
         rm, rn, rk = BitVecs("rm rn rk", 64)
 
-        # 保证每个 warp 计算的 tile 大小是 2 的指数，以及是 16 的倍数
+        # Ensure that the tile size for each warp computation is a power of two and a multiple of 16.
         for var in [rm, rn]:
             s.add(var % 16 == 0)
             s.add(UGT(var, 0))
             s.add(var & (var - 1) == 0)
 
-        # 设置 warp_k 为 16
+        # Set warp_k to 16
         s.add(rk == 16)
 
-        # 每个 warp 处理的 tile 大小限制
+        # Limit the tile size for each warp
         s.add(ULE(rm, 256))
         s.add(ULE(rn, 256))
 
-        # print("=== 所有约束 ===")
+        # print("=== All constraints ===")
         # for a in s.assertions():
         #     print(a)
 
@@ -93,7 +93,7 @@ def solve_reg(
         s.add(UGT(used_reg, 0))
         # s.add(Or(rm == rn, rm == rn >> 1, rn == rm >> 1))
 
-        # print("=== 所有约束 ===")
+        # print("=== All constraints ===")
         # for a in s.assertions():
         #     print(a)
 
@@ -163,30 +163,30 @@ def solve_shared(
         opt = Solver()
         bm, bn, bk = BitVecs("bm bn bk", 64)
 
-        # 每个 block 处理的 tile 大小限制
+        # Limit the tile size for each block
         opt.add(ULE(bm, 512))
         opt.add(ULE(bn, 512))
         opt.add(ULE(bk, 512))
 
-        # 限制 block 的 tile 大小为 2 的指数，且大于 0
+        # Limit the tile size for each block to be a power of two and greater than 0
         for var in [bm, bn, bk]:
             opt.add(UGT(var, 0))
             opt.add(var & (var - 1) == 0)
 
-        # 限制 block 的 tile 大小为 warp level 的 tile 大小的整数倍
+        # Limit the tile size for each block to be an integer multiple of the tile size at the warp level
         rm, rn, rk = rtile0
         opt.add(bm % rm == 0)
         opt.add(bn % rn == 0)
         opt.add(bk % rk == 0)
 
-        # 限制一些 bm bn bk 的组合关系
+        # Limit some combinations of bm, bn, and bk
         opt.add(Or(bk == 8, bk == 16, bk == 32, bk == 64))
         opt.add(
             Or(bm == bn, bm == bn >> 1, bn == bm >> 1, bm == bn >> 2, bn == bm >> 2)
         )
         opt.add(And(bm > bk, bn > bk))
 
-        # 限制每个 block 使用的 shared memory 大小
+        # Limit the size of shared memory used by each block
         smem: int = smem_size
         offset = 8
         total = (
@@ -195,12 +195,12 @@ def solve_shared(
         opt.add(UGT(total, 0))
         opt.add(ULE(total, smem))
 
-        # 限制 grid 大小
+        # Limit the size of the grid
         grid_size = UDiv(M, bm) * UDiv(N, bn)
         sm_nums = arch.sm_nums
         opt.add(UGE(grid_size, sm_nums))
 
-        # 限制线程数目
+        # Limit the number of threads
         num_threads = UDiv(bm, rm) * UDiv(bn, rn) * 32
         opt.add(UGE(num_threads, 32))
         opt.add(ULE(num_threads, 1024))
@@ -220,7 +220,7 @@ def solve_shared(
         opt = Solver()
         bm, bn, bk = BitVecs("bm bn bk", 64)
 
-        # 每个 block 处理的 tile 大小限制
+        # Limit the tile size for each block
         opt.add(ULE(bm, 512))
         opt.add(ULE(bn, 512))
         opt.add(ULE(bk, 512))
@@ -283,7 +283,7 @@ def solve_shared(
         sm_nums = arch.sm_nums
         opt.add(UGE(grid_size, sm_nums))
 
-        # print("=== 所有约束 ===", flush=True)
+        # print("=== All constraints ===", flush=True)
         # for a in opt.assertions():
         #     print(a, flush=True)
 
