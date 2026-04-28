@@ -99,8 +99,8 @@ class RuntimeMod:
         dtype = self.operator.dtype
 
         ctx = tvm.cuda(0)
-        cuda_a = tvm.nd.array(np.arange(M * K).reshape((M, K)).astype(dtype), ctx)
-        cuda_b = tvm.nd.array(np.arange(K * N).reshape((K, N)).astype(dtype), ctx)
+        cuda_a = tvm.nd.array(np.random.rand(M, K).astype(dtype), ctx)
+        cuda_b = tvm.nd.array(np.random.rand(K, N).astype(dtype), ctx)
         cuda_c = tvm.nd.array(np.zeros((M, N)).astype(dtype), ctx)
 
         t = self.timer_mod(cuda_a, cuda_b, cuda_c).mean
