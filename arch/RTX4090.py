@@ -95,3 +95,10 @@ class RTX4090(Arch):
         #
         # not used in latest Roller.
         self.max_threads_per_sm = 1536
+
+        self.sm_nums = self.compute_sm_partition[0]
+        self.compute_capability = (8, 9)
+        self.shared_mem_config_options = [0, 8, 16, 32, 64, 100]
+        self.max_resident_blocks_per_sm = self.max_active_blocks
+        self.max_resident_warps_per_sm = 48
+        self.max_registers_per_sm = self.reg_cap[0]
