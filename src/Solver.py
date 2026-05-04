@@ -182,9 +182,9 @@ def solve_shared(
         # Limit some combinations of bm, bn, and bk
         opt.add(Or(bk == 8, bk == 16, bk == 32, bk == 64))
         opt.add(
-            Or(bm == bn, bm == bn >> 1, bn == bm >> 1, bm == bn >> 2, bn == bm >> 2)
+            Or(bm == bn, bm == bn >> 1, bn == bm >> 1)
         )
-        opt.add(And(bm > bk, bn > bk))
+        opt.add(And(bm >= bk, bn >= bk))
 
         # Limit the size of shared memory used by each block
         smem: int = smem_size

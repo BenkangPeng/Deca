@@ -93,8 +93,8 @@ def test_CLayer():
     # Register level
     clayer_reg = CLayer(0, arch, use_tc=args.use_tc, shape=args.shape)
     rtiles0 = clayer_reg.solve()
-    # print(f"Find {len(rtiles0)} rtiles0")
-    # print(rtiles0)
+    print(f"Find {len(rtiles0)} rtiles0")
+    print(rtiles0)
 
     clayer_shared = CLayer(1, arch, rtiles0=rtiles0, use_tc=args.use_tc, shape=args.shape)
     tile_patterns = clayer_shared.solve()
@@ -103,7 +103,7 @@ def test_CLayer():
 
     # Test the occupancy, waves and com_mem_ratio of all tile patterns
     # for x in tile_patterns:
-    #     waves, occupancy = cal_theoretical_occupancy_tile(*x[1], *x[0])
+    #     waves, occupancy = cal_theoretical_occupancy_tile(*x[1], *x[0], dtype=args.dtype)
     #     ratio = (x[-1][0] * x[-1][1] * x[-1][2] * (K // x[-1][2])) / ((x[-1][0] * x[-1][2] + x[-1][1] * x[-1][2] + x[-1][0] * x[-1][1]) * (K // x[-1][2]) * byte_size(args.dtype))
     #     print(f"[WAVES, OCC, COM_MEM_RATIO] {x[1]}, {x[0]}: waves: {waves}, occupancy: {occupancy}, ratio: {ratio}, ", end="")
     #     gemm = GEMM(M, N, K, dtype=args.dtype, name="GEMM")
@@ -189,7 +189,7 @@ def test_CLayer():
 
     res = []
     for runtime_mod in runtime_mods:
-        # try:
+        try:
             runtime_mod.build()
             runtime_mod.time_evaluator()
             print(runtime_mod.record)
@@ -197,13 +197,14 @@ def test_CLayer():
                 (
                     runtime_mod.throughput,
                     runtime_mod.record,
+                    runtime_mod.compute_pattern,
                     runtime_mod.get_mod(),
                     runtime_mod.get_sch(),
                 )
             )
-        # except Exception as _:
-        #     print(f"{runtime_mod.compute_pattern} is not a valid compute pattern")
-        #     continue
+        except Exception as _:
+            print(f"{runtime_mod.compute_pattern} is not a valid compute pattern")
+            continue
 
     end_time = time.time()
     runtime = 2 * M * K * N / res[0][0] / 1e9  # unit: ms
@@ -215,7 +216,7 @@ def test_CLayer():
         )
 
     print(
-        f"✅✅✅ DeCA: M = {M}, N = {N}, K = {K}, throughput: {res[0][0]} TFLOPS\n, runtime: {runtime} ms, compile time: {end_time - start_time} seconds\n",
+        f"✅✅✅ DeCA: M = {M}, N = {N}, K = {K},\n tile config: {res[0][2]},\n throughput: {res[0][0]} TFLOPS\n, runtime: {runtime} ms, compile time: {end_time - start_time} seconds\n",
         flush=True,
     )
 

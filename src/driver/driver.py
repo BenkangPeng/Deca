@@ -46,12 +46,19 @@ def cal_theoretical_occupancy(
     # warps that can be executed on each SM.
     return max_resident_ctas, max_resident_warps / max_resident_warps_per_sm
 
+def byte_size(dtype: str) -> int:
+    if dtype == "float32":
+        return 4
+    elif dtype == "float16":
+        return 2
+    else:
+        raise ValueError(f"Unsupported data type: {dtype}")
 
 def cal_theoretical_occupancy_tile(BM, BN, BK, RM, RN, RK, dtype: str) -> float:
     """Calculate theoretical occupancy for a given tile pattern."""
-    assert (
-        False
-    ), "This function has some features not implemented yet (M, K, N, and arch)."
+    # assert (
+    #     False
+    # ), "This function has some features not implemented yet (M, K, N, and arch)."
 
     config_size_kb = 64.0
     shared_mem_per_cta_kb: float = float((BM * BK + BN * BK) * byte_size(dtype)) / 1024.0
