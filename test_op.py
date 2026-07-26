@@ -24,6 +24,7 @@ parser.add_argument("--shape", nargs="*", type=int, default=[4096, 4096, 4096])
 parser.add_argument("--use_tc", dest="use_tc", action="store_true", default=False)
 # "float32" for CUDA Core, "float16" for Tensor Core.
 parser.add_argument("--dtype", type=str, default="float32")
+parser.add_argument("--use_pareto", dest="use_pareto", action="store_true", default=False)
 args = parser.parse_args()
 
 M, N, K = args.shape
@@ -134,16 +135,16 @@ def test_CLayer():
     # sorted_tile_patterns = sorted(tile_patterns, key=AI, reverse=True)
 
     # Helper functions
-    # def compute_waves(x):
-    #     return cal_theoretical_occupancy_tile(*x[1], *x[0])[0]
-    # def compute_occupancy(x):
-    #     return cal_theoretical_occupancy_tile(*x[1], *x[0])[1]
-    # def compute_com_mem_ratio(x):
-    #     return (x[-1][0] * x[-1][1] * x[-1][2] * (K // x[-1][2])) / (
-    #         (x[-1][0] * x[-1][2] + x[-1][1] * x[-1][2] + x[-1][0] * x[-1][1])
-    #         * (K // x[-1][2])
-    #         * byte_size(args.dtype)
-    #     )
+    def compute_waves(x):
+        return cal_theoretical_occupancy_tile(*x[1], *x[0])[0]
+    def compute_occupancy(x):
+        return cal_theoretical_occupancy_tile(*x[1], *x[0])[1]
+    def compute_com_mem_ratio(x):
+        return (x[-1][0] * x[-1][1] * x[-1][2] * (K // x[-1][2])) / (
+            (x[-1][0] * x[-1][2] + x[-1][1] * x[-1][2] + x[-1][0] * x[-1][1])
+            * (K // x[-1][2])
+            * byte_size(args.dtype)
+        )
 
     # Sort by waves in descending order, then by occupancy in descending order
     # sorted_tile_patterns = sorted(tile_patterns, key=lambda x: (compute_waves(x), -compute_occupancy(x)), reverse=False)
@@ -152,33 +153,34 @@ def test_CLayer():
     # sorted_tile_patterns = sorted(tile_patterns, key=lambda x: (compute_waves(x) / (compute_occupancy(x) * compute_com_mem_ratio(x))), reverse=False)
 
     # Sort by normalized waves / compute memory ratio in descending order * occupancy in ascending order
-    # def sort_tile_patterns(tile_patterns):
-    #     # Calculate all original values
-    #     computed = []
-    #     for tp in tile_patterns:
-    #         waves = compute_waves(tp)
-    #         occ = compute_occupancy(tp)
-    #         ratio = compute_com_mem_ratio(tp)
-    #         computed.append((tp, waves, occ, ratio))
-    #     # Extract values
-    #     waves_vals = [c[1] for c in computed]
-    #     occ_vals = [c[2] for c in computed]
-    #     ratio_vals = [c[3] for c in computed]
-    #     # Normalize to [0, 1]
-    #     waves_min, waves_max = min(waves_vals), max(waves_vals)
-    #     occ_min, occ_max = min(occ_vals), max(occ_vals)
-    #     ratio_min, ratio_max = min(ratio_vals), max(ratio_vals)
-    #     def norm_waves(v): return (v - waves_min) / (waves_max - waves_min) if waves_max != waves_min else 0.5
-    #     def norm_occ(v): return (v - occ_min) / (occ_max - occ_min) if occ_max != occ_min else 0.5
-    #     def norm_ratio(v): return (v - ratio_min) / (ratio_max - ratio_min) if ratio_max != ratio_min else 0.5
-    #     # Calculate the score after normalization: waves/(occ*ratio), the smaller the better
-    #     sorted_patterns = sorted(
-    #         computed,
-    #         key=lambda x: norm_waves(x[1]) / (norm_occ(x[2]) * norm_ratio(x[3]) + 1e-9),
-    #         reverse=False  # The smaller the better
-    #     )
-    #     return [tp[0] for tp in sorted_patterns]
-    # sorted_tile_patterns = sort_tile_patterns(tile_patterns)
+    def sort_tile_patterns(tile_patterns):
+        # Calculate all original values
+        computed = []
+        for tp in tile_patterns:
+            waves = compute_waves(tp)
+            occ = compute_occupancy(tp)
+            ratio = compute_com_mem_ratio(tp)
+            computed.append((tp, waves, occ, ratio))
+        # Extract values
+        waves_vals = [c[1] for c in computed]
+        occ_vals = [c[2] for c in computed]
+        ratio_vals = [c[3] for c in computed]
+        # Normalize to [0, 1]
+        waves_min, waves_max = min(waves_vals), max(waves_vals)
+        occ_min, occ_max = min(occ_vals), max(occ_vals)
+        ratio_min, ratio_max = min(ratio_vals), max(ratio_vals)
+        def norm_waves(v): return (v - waves_min) / (waves_max - waves_min) if waves_max != waves_min else 0.5
+        def norm_occ(v): return (v - occ_min) / (occ_max - occ_min) if occ_max != occ_min else 0.5
+        def norm_ratio(v): return (v - ratio_min) / (ratio_max - ratio_min) if ratio_max != ratio_min else 0.5
+        # Calculate the score after normalization: waves/(occ*ratio), the smaller the better
+        sorted_patterns = sorted(
+            computed,
+            key=lambda x: norm_waves(x[1]) / (norm_occ(x[2]) * norm_ratio(x[3]) + 1e-9),
+            reverse=False  # The smaller the better
+        )
+        return [tp[0] for tp in sorted_patterns]
+    if args.use_pareto:
+        sorted_tile_patterns = sort_tile_patterns(tile_patterns)
 
     compute_patterns = sorted_tile_patterns[0:50]
     runtime_mods: List[RuntimeMod] = []
