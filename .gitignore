@@ -2,3 +2,7 @@
 .vscode
 __pycache__
 *.log
+
+# Ignore the evaluation on V100
+benchmark/evaluation_all.py
+benchmark/evaluation_all_V100.py
