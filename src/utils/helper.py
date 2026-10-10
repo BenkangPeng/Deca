@@ -8,9 +8,6 @@ from arch.RTX4090 import RTX4090
 from arch.H100 import H100
 from arch.V100 import V100
 
-import pycuda.driver as cuda
-import pycuda.autoinit
-
 from tvm.tir import Schedule
 from tvm.tir.schedule import LoopRV, BlockRV
 
@@ -63,8 +60,11 @@ class GPUDetector:
     def detect_gpu(cls, verbose: bool):
         """Detect current GPU model"""
         try:
-            device = cuda.Context.get_device()
-            device_name = device.name()
+            device = tvm.cuda(0)
+            # `exist` goes through the runtime API, which initializes the driver.
+            if not device.exist:
+                raise RuntimeError("no CUDA device is visible")
+            device_name = device.device_name
             if verbose:
                 print(f"Detected GPU: {device_name}")
 
