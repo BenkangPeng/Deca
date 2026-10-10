@@ -102,3 +102,15 @@ class RTX4090(Arch):
         self.max_resident_blocks_per_sm = self.max_active_blocks
         self.max_resident_warps_per_sm = 48
         self.max_registers_per_sm = self.reg_cap[0]
+
+        # Opt-in dynamic shared memory per block
+        # (cudaDevAttrMaxSharedMemoryPerBlockOptin), 99 KB.
+        self.max_dyn_smem_per_block = 101376
+        # GeForce Ada runs FP16 MMA with FP32 accumulation at half rate:
+        # 165.2 TFLOPS at the 2520 MHz boost clock (330.3 with FP16 accumulation).
+        self.peak_tc_flops_fp32acc = 165200
+        self.peak_mma_sync_flops = 165200
+        # Shared memory delivers 128 B/clk/SM at the 2520 MHz boost clock.
+        self.smem_bw_per_sm = 128 * 2.52e9
+        # Approximate achievable L2 bandwidth (GB/s).
+        self.l2_bw = 5000

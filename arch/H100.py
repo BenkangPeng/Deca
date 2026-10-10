@@ -54,15 +54,15 @@ class H100(Arch):
         #       ),
         #       which is 49152 for the H100 GPU.
         self.smem_cap = [49152]
-        # NOTE: There are 114 SMs on the H100 GPU, and each SM has 4 sub-cores.
-        self.compute_max_core = [114]
-        self.mem_max_core = [114]
+        self.compute_max_core = [132]
+        self.mem_max_core = [132]
         self.para_opt = para_opt
 
         self.warp_size = 32
-        # NOTE: There are 114 SMs on the H100 GPU, and each SM has 4 sub-cores.
-        self.compute_sm_partition = [114, 4]
-        self.smem_sm_partition = [114, 4]
+        # NOTE: The H100 SXM5 ("H100 80GB HBM3") has 132 SMs (the PCIe card
+        #       has 114), and each SM has 4 sub-cores.
+        self.compute_sm_partition = [132, 4]
+        self.smem_sm_partition = [132, 4]
         self.compute_block_schedule_way = ["warp", "active block"]
         self.smem_block_schedule_way = ["warp", "active block"]
         # transaction size in bytes.
@@ -100,3 +100,15 @@ class H100(Arch):
         self.max_resident_blocks_per_sm = self.max_active_blocks
         self.max_resident_warps_per_sm = 64
         self.max_registers_per_sm = self.reg_cap[0]
+
+        # Opt-in dynamic shared memory per block
+        # (cudaDevAttrMaxSharedMemoryPerBlockOptin), 227 KB.
+        self.max_dyn_smem_per_block = 232448
+        # Dense FP16 tensor-core throughput with FP32 accumulation (GFLOPS).
+        # `mma.sync` (no wgmma) reaches roughly 2/3 of the wgmma peak on Hopper.
+        self.peak_tc_flops_fp32acc = 989400
+        self.peak_mma_sync_flops = 660000
+        # Shared memory delivers 128 B/clk/SM at the 1980 MHz boost clock.
+        self.smem_bw_per_sm = 128 * 1.98e9
+        # Approximate achievable L2 bandwidth (GB/s).
+        self.l2_bw = 10000
