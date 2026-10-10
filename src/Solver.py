@@ -301,6 +301,91 @@ def solve_shared(
     return results
 
 
+def solve_flash_attn(
+    arch,
+    B: int,
+    H: int,
+    S_q: int,
+    S_kv: int,
+    D: int,
+    type_size: int = 2,
+    max_est_regs: int = 320,
+    count: int = 256,
+):
+    """
+    Enumerate FlashAttention forward tile configurations.
+    Args:
+        arch: Arch, the target GPU (uses `max_dyn_smem_per_block`, `sm_nums`)
+        B, H, S_q, S_kv, D: the attention shape
+        type_size: bytes per input element (2 for fp16)
+        max_est_regs: upper bound of the estimated live 32-bit registers per
+            thread; a light spill above 255 is tolerated, heavy spills are not
+        count: the maximum number of solutions to find
+    Returns:
+        list of FAConfig
+    """
+    from kernels.flash_attn_tir import FAConfig
+
+    s = Solver()
+    br, bc, nw, st, qs, swz = BitVecs("br bc nw st qs swz", 32)
+
+    s.add(Or(br == 64, br == 128))
+    s.add(Or(bc == 32, bc == 64, bc == 128))
+    s.add(Or(nw == 4, nw == 8))
+    s.add(And(UGE(st, 1), ULE(st, 3)))
+    s.add(ULE(qs, 1))
+    s.add(ULE(swz, 1))
+
+    # Each warp owns a multiple of 16 Q rows; the tiles must divide the sequence.
+    s.add(URem(br, nw * 16) == 0)
+    s.add(URem(BitVecVal(S_q, 32), br) == 0)
+    s.add(URem(BitVecVal(S_kv, 32), bc) == 0)
+    # Do not pipeline deeper than the number of KV tiles.
+    s.add(ULE(st, UDiv(BitVecVal(S_kv, 32), bc)))
+
+    # Cooperative 16-byte cp.async loads must evenly cover the tiles.
+    threads = nw * 32
+    cpr = D // 8
+    s.add(URem(br * cpr, threads) == 0)
+    s.add(URem(bc * cpr, threads) == 0)
+
+    # Shared memory: Q tile + `stages` K and V tiles (+8 halves of padding per row without swizzle).
+    ld = If(swz == 1, BitVecVal(D, 32), BitVecVal(D + 8, 32))
+    smem = (br * ld + 2 * st * bc * ld) * type_size
+    s.add(ULE(smem, arch.max_dyn_smem_per_block))
+
+    # Registers: O accumulator + S accumulator + P + Q fragments + K/V fragments.
+    mt = UDiv(br, nw * 16)
+    o_acc = mt * (D // 2)
+    s_acc = mt * UDiv(bc, 2)
+    p_h = mt * UDiv(bc, 4)
+    q_frag = If(qs == 1, mt * 8, mt * (D // 4))
+    kv_frag = 8
+    regs = o_acc + s_acc + p_h + q_frag + kv_frag + mt * 4 + 32
+    s.add(ULE(regs, max_est_regs))
+
+    s.add(ULE(threads, 1024))
+
+    # Enough CTAs to fill every SM at least once.
+    grid = UDiv(BitVecVal(S_q, 32), br) * (B * H)
+    s.add(UGE(grid, arch.sm_nums))
+
+    results = []
+    for _ in range(count):
+        if s.check() != sat:
+            break
+        m = s.model()
+        vals = [m[x].as_long() for x in (br, bc, nw, st, qs, swz)]
+        results.append(
+            FAConfig(
+                Br=vals[0], Bc=vals[1], num_warps=vals[2], stages=vals[3],
+                q_in_smem=bool(vals[4]), swizzle=bool(vals[5]),
+            )
+        )
+        s.add(Or(br != vals[0], bc != vals[1], nw != vals[2], st != vals[3], qs != vals[4], swz != vals[5]))
+    return results
+
+
 if __name__ == "__main__":
     print(solve_reg(255, type_size=4, count=20))
     print(solve_shared(49152, 65536, [4, 2, 1], type_size=4, count=40))
