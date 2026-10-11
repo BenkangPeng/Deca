@@ -114,3 +114,6 @@ class RTX4090(Arch):
         self.smem_bw_per_sm = 128 * 2.52e9
         # Approximate achievable L2 bandwidth (GB/s).
         self.l2_bw = 5000
+        # Peak DRAM bandwidth (GB/s, GDDR6X 384-bit x 21 Gbps) and L2 capacity (bytes).
+        self.dram_bw = 1008
+        self.l2_bytes = 72 * 1024 * 1024

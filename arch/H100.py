@@ -112,3 +112,6 @@ class H100(Arch):
         self.smem_bw_per_sm = 128 * 1.98e9
         # Approximate achievable L2 bandwidth (GB/s).
         self.l2_bw = 10000
+        # Peak DRAM bandwidth (GB/s, HBM3 on SXM5) and L2 capacity (bytes).
+        self.dram_bw = 3350
+        self.l2_bytes = 50 * 1024 * 1024

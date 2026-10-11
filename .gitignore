@@ -6,3 +6,5 @@ __pycache__
 # Ignore the evaluation on V100
 benchmark/evaluation_all.py
 benchmark/evaluation_all_V100.py
+
+.cursor/rules/project-environment.mdc
