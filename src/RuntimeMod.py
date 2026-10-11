@@ -45,12 +45,20 @@ class RuntimeMod:
     def is_flash_attn(self) -> bool:
         return isinstance(self.operator, FlashAttention)
 
+    @property
+    def is_kernel_op(self) -> bool:
+        """Operators that generate their kernel from a config (`build_mod`)."""
+        return hasattr(self.operator, "build_mod")
+
     def build(self):
         """
         Build the runtime module
         """
         if self.is_flash_attn:
             self.build_flash_attn()
+        elif self.is_kernel_op:
+            self.ir_mod = self.operator.build_mod(self.compute_pattern)
+            self.runtime_mod = self.operator.compile(self.ir_mod)
         elif self.use_tc:
             self.build_with_tc()
         else:
@@ -91,6 +99,12 @@ class RuntimeMod:
         """
         Load a FlashAttention kernel exported by `build_flash_attn_to_file`
         """
+        self.load_kernel(path)
+
+    def load_kernel(self, path: str):
+        """
+        Load a kernel of a `build_mod` operator exported to a shared library
+        """
         self.ir_mod = self.operator.build_mod(self.compute_pattern)
         self.runtime_mod = tvm.runtime.load_module(path)
 
@@ -99,7 +113,7 @@ class RuntimeMod:
         Show the IRModule
         """
         self.get_mod().show(black_format=False)
-        if not self.is_flash_attn:
+        if not self.is_kernel_op:
             cuda = self.runtime_mod.imported_modules[0].get_source()
             print(cuda)
 
@@ -107,7 +121,7 @@ class RuntimeMod:
         """
         Get the IRModule
         """
-        return self.ir_mod if self.is_flash_attn else self.sch.mod
+        return self.ir_mod if self.is_kernel_op else self.sch.mod
 
     def get_sch(self):
         """
@@ -122,6 +136,8 @@ class RuntimeMod:
         """
         if self.is_flash_attn:
             return self.time_flash_attn()
+        if self.is_kernel_op:
+            return self.time_kernel_op()
 
         M, N, K = self.operator.M, self.operator.N, self.operator.K
         num_flops = self.operator.num_flops
@@ -171,4 +187,46 @@ class RuntimeMod:
             f"{', causal' if op.causal else ''}) "
             f"\n\t{self.compute_pattern} \n\tcost time: {t * 1000:.4f} ms, "
             f"throughput: {self.throughput:.2f} TFLOPS, max err: {self.max_error:.2e}"
+        )
+
+    def time_kernel_op(self, verify: bool = True):
+        """
+        Time (and optionally verify against the operator's torch reference) a
+        memory-bound `build_mod` operator; throughput is reported in GB/s.
+        """
+        import torch
+        from kernels.attn_bench import bench_cuda
+
+        op = self.operator
+        inputs = op.make_inputs()
+        out = torch.empty_like(inputs[0])
+        args = [tvm.nd.from_dlpack(x) for x in op.kernel_args(inputs, out)]
+        func = self.runtime_mod["main"]
+
+        if verify:
+            func(*args)
+            torch.cuda.synchronize()
+            ref = op.reference(inputs)
+            atol, rtol = op.tolerance
+            self.max_error, excess = 0.0, 0.0
+            # Row chunks keep the fp32 temporaries small for vocab-sized inputs.
+            step = max(1, (1 << 24) // ref.shape[-1])
+            for r0 in range(0, ref.shape[0], step):
+                r = ref[r0 : r0 + step].float()
+                diff = (out[r0 : r0 + step].float() - r).abs()
+                self.max_error = max(self.max_error, diff.max().item())
+                excess = max(excess, (diff / (atol + rtol * r.abs())).max().item())
+            del ref
+            if not excess <= 1.0:
+                raise RuntimeError(
+                    f"{self.compute_pattern}: max error {self.max_error:.3e} exceeds "
+                    f"atol={atol} + rtol={rtol} * |ref| (x{excess:.2f})"
+                )
+
+        t = bench_cuda(lambda: func(*args))
+        self.execution_time = t
+        self.throughput = op.num_bytes / t / 1e9  # unit: GB/s
+        self.record = (
+            f"{op.describe()} \n\t{self.compute_pattern} \n\tcost time: {t * 1000:.4f} ms, "
+            f"throughput: {self.throughput:.1f} GB/s, max err: {self.max_error:.2e}"
         )

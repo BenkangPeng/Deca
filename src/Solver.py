@@ -386,6 +386,84 @@ def solve_flash_attn(
     return results
 
 
+def solve_rowwise(
+    arch,
+    op: str,
+    M: int,
+    N: int,
+    type_size: int = 2,
+    twopass_min_n: int = 16384,
+    count: int = 1024,
+):
+    """
+    Enumerate row-wise (Softmax / RMSNorm) kernel configurations.
+    Args:
+        arch: Arch, the target GPU (uses `sm_nums`, `max_registers_per_sm`)
+        op: "softmax" or "rmsnorm"
+        M, N: rows and reduced dimension
+        type_size: bytes per element (2 for fp16 / bf16)
+        twopass_min_n: rows at least this long may also be streamed twice
+            (always allowed when no register-cached config fits)
+        count: the maximum number of solutions to find
+    Returns:
+        list of RowConfig
+    """
+    from kernels.rowwise_tir import RowConfig
+
+    s = Solver()
+    tpr, rpb, vec, mode, unroll, hint, chunks = BitVecs("tpr rpb vec mode unroll hint chunks", 32)
+    n = BitVecVal(N, 32)
+
+    s.add(Or([tpr == v for v in (32, 64, 128, 256, 512, 1024)]))
+    s.add(Or([rpb == v for v in (1, 2, 4, 8, 16)]))
+    s.add(Or(vec == 4, vec == 8))
+    s.add(ULE(mode, 1))
+    s.add(Or(unroll == 1, unroll == 2, unroll == 4))
+    # Cache-hinted accesses (8 or 16 bytes).
+    s.add(ULE(hint, 1), Implies(hint == 1, UGE(vec * type_size, 8)))
+
+    threads = tpr * rpb
+    s.add(UGE(threads, 64), ULE(threads, 1024))
+    s.add(URem(n, vec) == 0)
+    s.add(URem(BitVecVal(M, 32), rpb) == 0)
+    # A row must keep every vector lane of its threads busy at least once.
+    s.add(ULE(tpr * vec, n))
+    # Enough CTAs to fill every SM at least once.
+    s.add(UGE(UDiv(BitVecVal(M, 32), rpb), arch.sm_nums))
+
+    span = tpr * vec
+    s.add(chunks == UDiv(n + span - 1, span))
+    # Registers: cached 16-bit values (2 per register) + bookkeeping (+ weight chunk).
+    cached = If(mode == 0, chunks, unroll)
+    regs = cached * UDiv(vec * type_size, 4) + 24 + (UDiv(vec, 2) if op == "rmsnorm" else 0)
+    s.add(ULE(regs, 255), ULE(regs * threads, arch.max_registers_per_sm))
+    # reg mode is fully unrolled; twopass needs at least one full loop iteration.
+    s.add(Implies(mode == 0, And(unroll == 1, ULE(chunks, 32))))
+    s.add(Implies(mode == 1, ULE(unroll, UDiv(n, span))))
+
+    reg_fits = Solver()
+    reg_fits.add(s.assertions())
+    reg_fits.add(mode == 0)
+    if N < twopass_min_n and reg_fits.check() == sat:
+        s.add(mode == 0)
+
+    results = []
+    for _ in range(count):
+        if s.check() != sat:
+            break
+        m = s.model()
+        vals = [m[x].as_long() for x in (tpr, rpb, vec, mode, unroll, hint)]
+        results.append(
+            RowConfig(
+                threads_per_row=vals[0], rows_per_block=vals[1], vec=vals[2],
+                mode="twopass" if vals[3] else "reg", unroll=vals[4], hint=bool(vals[5]),
+            )
+        )
+        s.add(Or(tpr != vals[0], rpb != vals[1], vec != vals[2], mode != vals[3],
+                 unroll != vals[4], hint != vals[5]))
+    return results
+
+
 if __name__ == "__main__":
     print(solve_reg(255, type_size=4, count=20))
     print(solve_shared(49152, 65536, [4, 2, 1], type_size=4, count=40))
