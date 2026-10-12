@@ -22,6 +22,8 @@ from tvm import tir
 from tvm.script.ir_builder import IRBuilder
 from tvm.script.ir_builder import tir as T
 
+from kernels.build import FAST_MATH_OPTIONS, build_kernel, cuda_target  # noqa: F401
+
 LOG2E = 1.4426950408889634
 NEG_INF = -1e30
 
@@ -476,23 +478,7 @@ def make_flash_attn_fwd(
     return tvm.IRModule({"main": func})
 
 
-FA_NVCC_OPTIONS = ["--use_fast_math"]
-# Extra nvcc options, only set while a FlashAttention kernel is being built so
-# that other operators keep TVM's default compilation flags.
-_extra_nvcc_options: list[str] = []
-
-
-@tvm.ffi.register_func("tvm_callback_cuda_compile", override=True)
-def _tvm_callback_cuda_compile(code, target):  # pylint: disable=unused-argument
-    from tvm.contrib import nvcc
-
-    return nvcc.compile_cuda(code, target_format="fatbin", options=list(_extra_nvcc_options))
-
-
-def cuda_target(device_id: int = 0) -> tvm.target.Target:
-    dev = tvm.cuda(device_id)
-    major, minor = dev.compute_version.split(".")
-    return tvm.target.Target({"kind": "cuda", "arch": f"sm_{major}{minor}"})
+FA_NVCC_OPTIONS = FAST_MATH_OPTIONS
 
 
 def build_flash_attn_to_file(
@@ -512,11 +498,4 @@ def build_flash_attn(
     dump_dir: str | None = None,
 ):
     """Compiles the kernel; `dump_dir` keeps the generated .cu for inspection."""
-    target = target or cuda_target()
-    config = {"cuda.kernels_output_dir": dump_dir} if dump_dir else {}
-    _extra_nvcc_options[:] = FA_NVCC_OPTIONS
-    try:
-        with target, tvm.transform.PassContext(opt_level=3, config=config):
-            return tvm.compile(mod, target=target)
-    finally:
-        _extra_nvcc_options.clear()
+    return build_kernel(mod, target, dump_dir, FA_NVCC_OPTIONS)
