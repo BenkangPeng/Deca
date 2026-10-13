@@ -110,6 +110,8 @@ class RTX4090(Arch):
         # 165.2 TFLOPS at the 2520 MHz boost clock (330.3 with FP16 accumulation).
         self.peak_tc_flops_fp32acc = 165200
         self.peak_mma_sync_flops = 165200
+        # mma.sync with FP16 accumulation runs at the full rate on GeForce Ada.
+        self.peak_mma_sync_f16acc_flops = 330300
         # Shared memory delivers 128 B/clk/SM at the 2520 MHz boost clock.
         self.smem_bw_per_sm = 128 * 2.52e9
         # Approximate achievable L2 bandwidth (GB/s).

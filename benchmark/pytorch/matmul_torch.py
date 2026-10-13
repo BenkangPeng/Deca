@@ -61,3 +61,7 @@ if __name__ == "__main__":
         M, N, K = shape
         test_matmul_perf(M, N, K, dtype=torch.float32)
 
+    # FP16 Tensor Core square GEMMs (baseline of test_gemm_tc.py)
+    for n in range(2048, 16384 + 1, 2048):
+        test_matmul_perf(n, n, n, dtype=torch.float16)
+

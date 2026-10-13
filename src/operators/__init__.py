@@ -1,5 +1,6 @@
 from .Op import *
 from .GEMM import *
+from .GEMMTC import *
 from .Conv2D import *
 from .FlashAttention import *
 from .Rowwise import *
