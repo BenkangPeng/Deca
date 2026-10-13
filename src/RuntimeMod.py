@@ -192,14 +192,15 @@ class RuntimeMod:
     def time_kernel_op(self, verify: bool = True):
         """
         Time (and optionally verify against the operator's torch reference) a
-        memory-bound `build_mod` operator; throughput is reported in GB/s.
+        `build_mod` operator. Throughput is reported in GB/s for memory-bound
+        operators and in TFLOPS for operators with `metric == "TFLOPS"`.
         """
         import torch
         from kernels.attn_bench import bench_cuda
 
         op = self.operator
         inputs = op.make_inputs()
-        out = torch.empty_like(inputs[0])
+        out = op.make_output(inputs) if hasattr(op, "make_output") else torch.empty_like(inputs[0])
         args = [tvm.nd.from_dlpack(x) for x in op.kernel_args(inputs, out)]
         func = self.runtime_mod["main"]
 
@@ -225,8 +226,13 @@ class RuntimeMod:
 
         t = bench_cuda(lambda: func(*args))
         self.execution_time = t
-        self.throughput = op.num_bytes / t / 1e9  # unit: GB/s
+        if getattr(op, "metric", "GB/s") == "TFLOPS":
+            self.throughput = op.num_flops / t / 1e12
+            unit = "TFLOPS"
+        else:
+            self.throughput = op.num_bytes / t / 1e9
+            unit = "GB/s"
         self.record = (
             f"{op.describe()} \n\t{self.compute_pattern} \n\tcost time: {t * 1000:.4f} ms, "
-            f"throughput: {self.throughput:.1f} GB/s, max err: {self.max_error:.2e}"
+            f"throughput: {self.throughput:.1f} {unit}, max err: {self.max_error:.2e}"
         )

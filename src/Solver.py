@@ -464,6 +464,95 @@ def solve_rowwise(
     return results
 
 
+def solve_gemm_tc(
+    arch,
+    M: int,
+    N: int,
+    K: int,
+    type_size: int = 2,
+    count: int = 4096,
+    acc_f16: bool = False,
+    acc_splits: int = 1,
+):
+    """
+    Enumerate FP16 Tensor Core GEMM tile configurations (see `GemmConfig`).
+    Args:
+        arch: Arch, the target GPU (uses `max_dyn_smem_per_block`, `sm_nums`)
+        M, N, K: the GEMM shape (C[M, N] = A[M, K] @ B[K, N])
+        type_size: bytes per input element (2 for fp16)
+        count: the maximum number of solutions to find
+        acc_f16: fp16 accumulation (else fp32)
+        acc_splits: alternating fp16 accumulator sets (fp16 accumulation only)
+    Returns:
+        list of GemmConfig
+    """
+    from kernels.gemm_tir import EPI_PAD, MAX_REGS, GemmConfig
+
+    s = Solver()
+    bm, bn, bk, wm, wn, st, epi = BitVecs("bm bn bk wm wn st epi", 32)
+    m_, n_, k_ = (BitVecVal(v, 32) for v in (M, N, K))
+
+    s.add(Or([bm == v for v in (64, 128, 256)]))
+    s.add(Or([bn == v for v in (64, 128, 256)]))
+    s.add(Or(bk == 32, bk == 64))
+    s.add(Or([wm == v for v in (32, 64, 128)]))
+    s.add(Or([wn == v for v in (32, 64, 128)]))
+    s.add(And(UGE(st, 2), ULE(st, 5)))
+    s.add(ULE(epi, 1))
+
+    # Warp tiles divide the CTA tile, CTA tiles divide the problem.
+    s.add(URem(bm, wm) == 0, URem(bn, wn) == 0)
+    s.add(URem(m_, bm) == 0, URem(n_, bn) == 0, URem(k_, bk) == 0)
+    # Do not pipeline deeper than the number of K tiles.
+    s.add(ULE(st, UDiv(k_, bk)))
+
+    # 2 to 16 warps per CTA.
+    threads = UDiv(bm, wm) * UDiv(bn, wn) * 32
+    s.add(UGE(threads, 64), ULE(threads, 1024))
+    # Cooperative 16-byte cp.async loads (and epilogue stores) evenly cover the tiles.
+    s.add(URem(bm * UDiv(bk, 8), threads) == 0)
+    s.add(URem(bk * UDiv(bn, 8), threads) == 0)
+    s.add(Implies(epi == 1, URem(bm * UDiv(bn, 8), threads) == 0))
+
+    # Shared memory: `stages` A and B tiles; the staged epilogue reuses them.
+    pipe_smem = st * (bm * bk + bk * bn) * type_size
+    epi_smem = If(epi == 1, bm * (bn + EPI_PAD) * type_size, BitVecVal(0, 32))
+    s.add(ULE(pipe_smem, arch.max_dyn_smem_per_block))
+    s.add(ULE(epi_smem, arch.max_dyn_smem_per_block))
+
+    # Registers: accumulators (fp32, or acc_splits sets of packed fp16) +
+    # double-buffered A / B fragments + bookkeeping.
+    acc = UDiv(wm * wn, 32) if not acc_f16 else UDiv(wm * wn * acc_splits, 64)
+    frags = 2 * (UDiv(wm, 16) * 4 + UDiv(wn, 16) * 4)
+    regs = acc + frags + 24
+    s.add(ULE(regs, MAX_REGS))
+    # One CTA must fit in the register file (8-register allocation granularity).
+    s.add(ULE(UDiv(regs + 7, 8) * 8 * threads, arch.max_registers_per_sm))
+
+    # Enough CTAs to fill every SM at least once.
+    s.add(UGE(UDiv(m_, bm) * UDiv(n_, bn), arch.sm_nums))
+
+    tile_vars = (bm, bn, bk, wm, wn, st, epi)
+    results = []
+    while len(results) < count and s.check() == sat:
+        mdl = s.model()
+        vals = [mdl[x].as_long() for x in tile_vars]
+        s.add(Or([x != v for x, v in zip(tile_vars, vals)]))
+        # The rasterization group (CTA rows sweeping the columns together) only
+        # needs to divide the CTA grid rows; it does not interact with the
+        # other constraints, so it is expanded here instead of in Z3.
+        for ras in (1, 2, 4, 8, 16):
+            if (M // vals[0]) % ras == 0:
+                results.append(
+                    GemmConfig(
+                        BM=vals[0], BN=vals[1], BK=vals[2], warp_m=vals[3], warp_n=vals[4],
+                        stages=vals[5], raster=ras, epi_smem=bool(vals[6]),
+                        acc_f16=acc_f16, acc_splits=acc_splits if acc_f16 else 1,
+                    )
+                )
+    return results[:count]
+
+
 if __name__ == "__main__":
     print(solve_reg(255, type_size=4, count=20))
     print(solve_shared(49152, 65536, [4, 2, 1], type_size=4, count=40))
