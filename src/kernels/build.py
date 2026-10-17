@@ -4,6 +4,8 @@ Shared compilation helpers for the hand-written TIR kernels.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import tvm
 
 FAST_MATH_OPTIONS = ["--use_fast_math"]
@@ -53,15 +55,17 @@ CACHE_HINT_HELPERS = "".join(
 )
 
 
-@tvm.ffi.register_func("tvm_callback_cuda_compile", override=True)
-def _tvm_callback_cuda_compile(code, target):  # pylint: disable=unused-argument
-    from tvm.contrib import nvcc
+@tvm.register_global_func("tvm_callback_cuda_compile", override=True)
+def _tvm_callback_cuda_compile(code):  # pylint: disable=unused-argument
+    from tvm.support import nvcc
 
     if "ld_hint_" in code or "st_stream_" in code:
         # After TVM's own preamble, which defines the vector types.
         pos = code.find("extern \"C\" __global__")
         code = code[:pos] + CACHE_HINT_HELPERS + code[pos:]
-    return nvcc.compile_cuda(code, target_format="fatbin", options=list(_extra_nvcc_options))
+    return nvcc.compile_cuda(
+        code, target_format="fatbin", options=list(_extra_nvcc_options), compiler="nvcc"
+    )
 
 
 def cuda_target(device_id: int = 0) -> tvm.target.Target:
@@ -78,10 +82,15 @@ def build_kernel(
 ):
     """Compiles a kernel module; `dump_dir` keeps the generated .cu for inspection."""
     target = target or cuda_target()
-    config = {"cuda.kernels_output_dir": dump_dir} if dump_dir else {}
     _extra_nvcc_options[:] = FAST_MATH_OPTIONS if nvcc_options is None else nvcc_options
     try:
-        with target, tvm.transform.PassContext(opt_level=3, config=config):
-            return tvm.compile(mod, target=target)
+        with target, tvm.transform.PassContext(opt_level=3):
+            runtime_mod = tvm.compile(mod, target=target, tir_pipeline="s_tir").mod
+        if dump_dir:
+            output = Path(dump_dir)
+            output.mkdir(parents=True, exist_ok=True)
+            for i, device_mod in enumerate(runtime_mod.imports):
+                (output / f"kernel_{i}.cu").write_text(device_mod.inspect_source())
+        return runtime_mod
     finally:
         _extra_nvcc_options.clear()

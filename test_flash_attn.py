@@ -2,7 +2,7 @@
 Auto-tune the FlashAttention forward kernel and compare it with torch SDPA
 (flash backend).
 
-Usage (conda env `tvm-build-venv`, PYTHONPATH from .env):
+Usage (conda env `tvm`, TVM 0.27 with CUDA):
     CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=1 python test_flash_attn.py --shape 4 16 4096 128
     CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 python test_flash_attn.py --sweep [--causal]
 """
@@ -126,7 +126,7 @@ def tune(args, shape, arch, arch_str, log):
     # so that clock drift and interference on a shared GPU hit all of them alike.
     q, k, v = make_qkv(B, H, S_q, S_kv, D)
     o = torch.empty_like(q)
-    tvm_args = [tvm.nd.from_dlpack(x) for x in (q, k, v, o)]
+    tvm_args = [tvm.runtime.from_dlpack(x) for x in (q, k, v, o)]
     fns = {"sdpa": lambda: sdpa_flash(q, k, v, causal=args.causal, scale=op.softmax_scale)}
     for _, cfg, _, _ in finalists:
         func = tvm.runtime.load_module(paths[cfg])["main"]

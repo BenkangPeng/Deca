@@ -25,9 +25,10 @@ from contextlib import ExitStack
 from dataclasses import asdict, dataclass
 
 import tvm
-from tvm import tir
+from tvm import tirx as tir
 from tvm.script.ir_builder import IRBuilder
-from tvm.script.ir_builder import tir as T
+from tvm.tirx.script import builder as T
+from tvm.script import tirx as Tx
 
 from kernels.build import FAST_MATH_OPTIONS, build_kernel
 
@@ -102,9 +103,9 @@ def make_rowwise(
     f32 = lambda v: T.Cast("float32", v)  # noqa: E731
 
     with IRBuilder() as ib:
-        with T.prim_func():
+        with T.prim_func(s_tir=True):
             T.func_name("main")
-            T.func_attr({"global_symbol": "main", "tir.noalias": True})
+            T.func_attr({"global_symbol": "main", "tirx.noalias": True})
             x = T.arg("x", T.handle())
             w = T.arg("w", T.handle()) if op == "rmsnorm" else None
             y = T.arg("y", T.handle())
@@ -124,13 +125,13 @@ def make_rowwise(
                 with ExitStack() as stack:
 
                     def local(name, n, dt):
-                        buf = stack.enter_context(T.decl_buffer((n,), dt, scope="local"))
+                        buf = T.decl_buffer((n,), dt, scope="local")
                         return IRBuilder.name(name, buf)
 
                     def flat(name, buf):
                         return IRBuilder.name(
                             name,
-                            stack.enter_context(T.decl_buffer((M * N,), dtype, data=buf.data)),
+                            T.decl_buffer((M * N,), dtype, data=buf.data),
                         )
 
                     X = flat("X_flat", X2)
@@ -140,9 +141,7 @@ def make_rowwise(
                     if NW > 1:
                         red = IRBuilder.name(
                             "red",
-                            stack.enter_context(
-                                T.decl_buffer((2 * RPB * NW,), "float32", scope="shared")
-                            ),
+                            T.decl_buffer((2 * RPB * NW,), "float32", scope="shared"),
                         )
                     cache = local("xh", (C if cfg.mode == "reg" else U) * VEC, dtype)
                     oh = local("oh", VEC, dtype)

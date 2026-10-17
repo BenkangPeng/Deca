@@ -2,7 +2,7 @@
 Auto-tune the FP16 Tensor Core GEMM (C = A @ B, fp32 accumulation) and compare
 it with torch.matmul (cuBLAS).
 
-Usage (conda env `tvm-build-venv`, PYTHONPATH from .env):
+Usage (conda env `tvm`, TVM 0.27 with CUDA):
     CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=1 python test_gemm_tc.py --shape 4096 4096 4096
     CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=1 python test_gemm_tc.py --sweep
 """
@@ -143,7 +143,7 @@ def tune(args, shape, arch, arch_str, log):
     # so that clock drift and interference on a shared GPU hit all of them alike.
     inputs = op.make_inputs()
     out = op.make_output(inputs)
-    tvm_args = [tvm.nd.from_dlpack(x) for x in op.kernel_args(inputs, out)]
+    tvm_args = [tvm.runtime.from_dlpack(x) for x in op.kernel_args(inputs, out)]
     fns = {"torch": lambda: torch_ref(inputs)}
     for _, cfg, _, _ in finalists:
         func = tvm.runtime.load_module(paths[cfg])["main"]

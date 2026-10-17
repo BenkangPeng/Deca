@@ -24,9 +24,10 @@ from contextlib import ExitStack
 from dataclasses import dataclass, asdict
 
 import tvm
-from tvm import tir
+from tvm import tirx as tir
 from tvm.script.ir_builder import IRBuilder
-from tvm.script.ir_builder import tir as T
+from tvm.tirx.script import builder as T
+from tvm.script import tirx as Tx
 
 from kernels.build import FAST_MATH_OPTIONS, build_kernel
 
@@ -140,9 +141,9 @@ def make_gemm_tc(M: int, N: int, K: int, cfg: GemmConfig) -> tvm.IRModule:
     WAIT = ST - 2
 
     with IRBuilder() as ib:
-        with T.prim_func():
+        with T.prim_func(s_tir=True):
             T.func_name("main")
-            T.func_attr({"global_symbol": "main", "tir.noalias": True})
+            T.func_attr({"global_symbol": "main", "tirx.noalias": True})
             a = T.arg("a", T.handle())
             b = T.arg("b", T.handle())
             c = T.arg("c", T.handle())
@@ -166,12 +167,12 @@ def make_gemm_tc(M: int, N: int, K: int, cfg: GemmConfig) -> tvm.IRModule:
                 with ExitStack() as stack:
 
                     def local(name, n, dtype):
-                        buf = stack.enter_context(T.decl_buffer((n,), dtype, scope="local"))
+                        buf = T.decl_buffer((n,), dtype, scope="local")
                         return IRBuilder.name(name, buf)
 
                     smem = IRBuilder.name(
                         "smem",
-                        stack.enter_context(T.decl_buffer((SMEM,), "float16", scope="shared.dyn")),
+                        T.decl_buffer((SMEM,), "float16", scope="shared.dyn"),
                     )
                     a_frag = local("a_frag", 2 * MT * 8, "float16")
                     b_frag = local("b_frag", 2 * NP * 8, "float16")
@@ -180,21 +181,21 @@ def make_gemm_tc(M: int, N: int, K: int, cfg: GemmConfig) -> tvm.IRModule:
                     acc = local("acc", SPL * MT * NT8 * 4, ACC)
                     C_flat = IRBuilder.name(
                         "C_flat",
-                        stack.enter_context(T.decl_buffer((M * N,), "float16", data=C.data)),
+                        T.decl_buffer((M * N,), "float16", data=C.data),
                     )
 
                     def sync():
                         T.evaluate(T.tvm_storage_sync("shared"))
 
                     def commit():
-                        T.evaluate(T.ptx_commit_group(dtype=""))
+                        T.evaluate(Tx.ptx.cp.async_.commit_group())
 
                     def wait(n):
-                        T.evaluate(T.ptx_wait_group(n, dtype=""))
+                        T.evaluate(Tx.ptx.cp.async_.wait_group(n))
 
                     def cp_async(s_off, G, g_off):
                         T.evaluate(
-                            T.ptx_cp_async(smem.data, s_off, G.data, g_off, 16, dtype="float16")
+                            Tx.s_tir.cp_async_raw.legacy(smem.data, s_off, G.data, g_off, 16, dtype="float16")
                         )
 
                     # ---------------- global -> shared (cp.async) ----------------
@@ -261,7 +262,7 @@ def make_gemm_tc(M: int, N: int, K: int, cfg: GemmConfig) -> tvm.IRModule:
                     def load_frags(slot, ks, buf):
                         for mt in range(MT):
                             T.evaluate(
-                                T.ptx_ldmatrix(
+                                Tx.ptx_legacy.ldmatrix(
                                     False, 4, ".b16", a_frag.data, (buf * MT + mt) * 8,
                                     smem.data, slot * A_STAGE + a_frag_off(mt, ks),
                                     dtype="float16",
@@ -269,7 +270,7 @@ def make_gemm_tc(M: int, N: int, K: int, cfg: GemmConfig) -> tvm.IRModule:
                             )
                         for p in range(NP):
                             T.evaluate(
-                                T.ptx_ldmatrix(
+                                Tx.ptx_legacy.ldmatrix(
                                     True, 4, ".b16", b_frag.data, (buf * NP + p) * 8,
                                     smem.data, B_OFF + slot * B_STAGE + b_frag_off(ks, p),
                                     dtype="float16",
@@ -278,7 +279,7 @@ def make_gemm_tc(M: int, N: int, K: int, cfg: GemmConfig) -> tvm.IRModule:
 
                     def mma(buf, mt, j):
                         T.evaluate(
-                            T.ptx_mma(
+                            Tx.ptx_legacy.mma(
                                 "m16n8k16", "row", "col", "fp16", "fp16", ACC_PTX,
                                 a_frag.data, (buf * MT + mt) * 8,
                                 b_frag.data, (buf * NP + j // 2) * 8 + (j % 2) * 4,

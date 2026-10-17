@@ -5,13 +5,13 @@ python benchmark/tvm/tvm_gemm_tuner.py --shape 4096 4096 4096 --use_tc --data_ty
 import numpy as np
 import tvm
 from tvm.script import ir as I
-from tvm.script import tir as T
-import tvm.meta_schedule as ms
-from tvm.meta_schedule.database.json_database import JSONDatabase
+from tvm.script import tirx as T
+import tvm.s_tir.meta_schedule as ms
+from tvm.s_tir.meta_schedule.database.json_database import JSONDatabase
 import time
 import shutil
 import os
-import tvm.tir.tensor_intrin
+import tvm.s_tir.tensor_intrin.cuda
 
 os.environ["OPENBLAS_NUM_THREADS"] = "4"
 
@@ -19,7 +19,7 @@ import argparse
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--shape", nargs="*", type=int, default=[4096, 4096, 4096])
-parser.add_argument("--target", type=str, default="nvidia/geforce-rtx-4090")
+parser.add_argument("--target", type=str, default="cuda")
 parser.add_argument("--use_tc", dest="use_tc", action="store_true", default=False)
 parser.add_argument("--data_type", type=str, default="float32")
 # Use --skip_tuning to skip tuning and use the cached database
@@ -30,7 +30,7 @@ args = parser.parse_args()
 
 M, N, K = args.shape
 dtype = args.data_type
-target = args.target
+target = tvm.target.Target.from_device(tvm.cuda()) if args.target == "cuda" else tvm.target.Target(args.target)
 use_tc = args.use_tc
 skip_tuning = args.skip_tuning
 
@@ -47,14 +47,14 @@ def create_gemm_ir_module(M, N, K, dtype):
 
     @I.ir_module
     class GEMM_IRModule:
-        @T.prim_func
+        @T.prim_func(s_tir=True)
         def main(a: T.handle, b: T.handle, c: T.handle):
-            T.func_attr({"global_symbol": "main", "tir.noalias": True})
+            T.func_attr({"global_symbol": "main", "tirx.noalias": True})
             A = T.match_buffer(a, [M, K], dtype=dtype)
             B = T.match_buffer(b, [K, N], dtype=dtype)
             C = T.match_buffer(c, [M, N], dtype=dtype)
             for i, j, k in T.grid(M, N, K):
-                with T.block("C"):
+                with T.sblock("C"):
                     vi, vj, vk = T.axis.remap("SSR", [i, j, k])
                     with T.init():
                         C[vi, vj] = 0.0
@@ -70,16 +70,16 @@ def create_gemm_ir_module_fp32_acc(M, N, K, dtype):
 
     @I.ir_module
     class GEMM_IRModule_fp32_acc:
-        @T.prim_func
+        @T.prim_func(s_tir=True)
         def main(a: T.handle, b: T.handle, c: T.handle):
-            T.func_attr({"global_symbol": "main", "tir.noalias": True})
+            T.func_attr({"global_symbol": "main", "tirx.noalias": True})
             A = T.match_buffer(a, [M, K], dtype=dtype)
             B = T.match_buffer(b, [K, N], dtype=dtype)
             C = T.match_buffer(c, [M, N], dtype=dtype)
             # Use fp32 to accumulate the result
-            accum_buffer = T.alloc_buffer([M, N], dtype="float32")
+            accum_buffer = T.sblock_alloc_buffer([M, N], dtype="float32")
             for i, j, k in T.grid(M, N, K):
-                with T.block("C_acc"):
+                with T.sblock("C_acc"):
                     vi, vj, vk = T.axis.remap("SSR", [i, j, k])
                     with T.init():
                         accum_buffer[vi, vj] = T.float32(0)
@@ -88,7 +88,7 @@ def create_gemm_ir_module_fp32_acc(M, N, K, dtype):
                     ) * T.cast(B[vk, vj], "float32")
             # Convert the accum_buffer to float16 and store it in C
             for i, j in T.grid(M, N):
-                with T.block("C"):
+                with T.sblock("C"):
                     vi, vj = T.axis.remap("SS", [i, j])
                     C[vi, vj] = T.cast(accum_buffer[vi, vj], dtype)
 
@@ -127,24 +127,24 @@ def tune_gemm():
     sch = ms.tir_integration.compile_tir(database, gemm_ir_module, target)
 
     # shutil.rmtree(work_dir)
-    rt_mod = tvm.build(sch.mod, "cuda")
+    rt_mod = tvm.compile(sch.mod, target="cuda", tir_pipeline="s_tir").mod
     dump(
-        rt_mod.imported_modules[0].get_source(),
+        rt_mod.imports[0].inspect_source(),
         os.path.join(os.path.dirname(__file__), "gemm_ir_module.cu"),
     )
     dump(sch.mod.script(), os.path.join(os.path.dirname(__file__), "gemm_ir_module.py"))
 
     a_np = np.random.uniform(low=0.0, high=0.01, size=(M, K)).astype(dtype)
     b_np = np.random.uniform(low=0.0, high=0.01, size=(K, N)).astype(dtype)
-    a_nd = tvm.nd.array(a_np, tvm.cuda(0))
-    b_nd = tvm.nd.array(b_np, tvm.cuda(0))
-    c_nd = tvm.nd.array(np.zeros((M, N), dtype=dtype), tvm.cuda(0))
+    a_nd = tvm.runtime.tensor(a_np, tvm.cuda(0))
+    b_nd = tvm.runtime.tensor(b_np, tvm.cuda(0))
+    c_nd = tvm.runtime.tensor(np.zeros((M, N), dtype=dtype), tvm.cuda(0))
 
     rt_mod["main"](a_nd, b_nd, c_nd)
     np.testing.assert_allclose(c_nd.numpy(), a_np @ b_np, rtol=1e-5, atol=1e-5)
 
     num_flop = 2 * M * K * N
-    evaluator = rt_mod.time_evaluator(rt_mod.entry_name, tvm.cuda(0), number=10)
+    evaluator = rt_mod.time_evaluator("main", tvm.cuda(0), number=10)
     timer = evaluator(a_nd, b_nd, c_nd).mean
     print("time cost on average: %f ms" % (timer * 1e3))
     print("GEMM-Blocking: %f GFLOPS" % (num_flop / timer / 1e9))

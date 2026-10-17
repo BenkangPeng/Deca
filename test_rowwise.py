@@ -2,7 +2,7 @@
 Auto-tune the row-wise Softmax / RMSNorm forward kernels and compare them with
 eager torch (`torch.softmax`, `F.rms_norm`).
 
-Usage (conda env `tvm-build-venv`, PYTHONPATH from .env):
+Usage (conda env `tvm`, TVM 0.27 with CUDA):
     CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=1 python test_rowwise.py --op softmax --shape 16384 4096
     CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 python test_rowwise.py --op rmsnorm --dtype bf16 --sweep
 """
@@ -117,7 +117,7 @@ def tune(args, shape, arch, arch_str, log):
     # so that clock drift and interference on a shared GPU hit all of them alike.
     inputs = op.make_inputs()
     out = torch.empty_like(inputs[0])
-    tvm_args = [tvm.nd.from_dlpack(x) for x in op.kernel_args(inputs, out)]
+    tvm_args = [tvm.runtime.from_dlpack(x) for x in op.kernel_args(inputs, out)]
     fns = {"torch": lambda: op.reference(inputs)}
     for _, cfg, _, _ in finalists:
         func = tvm.runtime.load_module(paths[cfg])["main"]

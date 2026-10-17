@@ -8,8 +8,8 @@ from arch.RTX4090 import RTX4090
 from arch.H100 import H100
 from arch.V100 import V100
 
-from tvm.tir import Schedule
-from tvm.tir.schedule import LoopRV, BlockRV
+from tvm.s_tir import Schedule
+from tvm.s_tir.schedule import LoopRV, SBlockRV
 
 
 dim3 = namedtuple("dim3", ["x", "y", "z"])
@@ -90,8 +90,8 @@ class GPUDetector:
 
 
 def getSpecifiedLoopRVs(
-    sch: Schedule, block: BlockRV, iter_type
-) -> Tuple[tvm.tir.schedule.LoopRV]:
+    sch: Schedule, block: SBlockRV, iter_type
+) -> Tuple[tvm.s_tir.schedule.LoopRV]:
     """Helper function to get specified loop RVs"""
     alllooprvs = sch.get_loops(block)
     targetlooprvs = []
@@ -103,14 +103,14 @@ def getSpecifiedLoopRVs(
     return targetlooprvs
 
 
-def getSpatialLoopRVs(sch: Schedule, block: BlockRV) -> Tuple[tvm.tir.schedule.LoopRV]:
+def getSpatialLoopRVs(sch: Schedule, block: SBlockRV) -> Tuple[tvm.s_tir.schedule.LoopRV]:
     """Helper function to get spatial LoopRVs"""
-    return getSpecifiedLoopRVs(sch, block, iter_type=tvm.tir.IterVar.DataPar)
+    return getSpecifiedLoopRVs(sch, block, iter_type=tvm.tirx.IterVar.DataPar)
 
 
-def getReduceLoopRVs(sch: Schedule, block: BlockRV) -> Tuple[tvm.tir.schedule.LoopRV]:
+def getReduceLoopRVs(sch: Schedule, block: SBlockRV) -> Tuple[tvm.s_tir.schedule.LoopRV]:
     """Helper function to get reduce LoopRVs"""
-    return getSpecifiedLoopRVs(sch, block, iter_type=tvm.tir.IterVar.CommReduce)
+    return getSpecifiedLoopRVs(sch, block, iter_type=tvm.tirx.IterVar.CommReduce)
 
 
 def calculate_factors(sch: Schedule, looprv: LoopRV, factor: int) -> Tuple[int, int]:
