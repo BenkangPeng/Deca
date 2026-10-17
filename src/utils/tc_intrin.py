@@ -2,14 +2,14 @@ import tvm
 from tvm import te
 import sys
 from typing import List, Tuple
-from tvm.script import tir as T
+from tvm.script import tirx as T
 
 if sys.version_info >= (3, 8):
     from typing import Literal
 else:
     from typing_extensions import Literal
 
-from tvm.tir import TensorIntrin
+from tvm.s_tir import TensorIntrin
 
 
 def init_intrin_strides(
@@ -75,7 +75,7 @@ def register_wmma_load_intrin(
         read_range = (wmma_k, wmma_n)
         write_range = (wmma_k, wmma_n)
 
-    @T.prim_func
+    @T.prim_func(s_tir=True)
     def wmma_load_desc(a: T.handle, c: T.handle) -> None:
         A = T.match_buffer(
             a,
@@ -96,17 +96,17 @@ def register_wmma_load_intrin(
             strides=stride_dst,
         )
 
-        with T.block("root"):
+        with T.sblock("root"):
             T.reads(A[0 : read_range[0], 0 : read_range[1]])
             T.writes(C[0 : write_range[0], 0 : write_range[1]])
             for i, j in T.grid(buffer_shape[0], buffer_shape[1]):
-                with T.block("load"):
+                with T.sblock("load"):
                     vii, vjj = T.axis.remap("SS", [i, j])
                     T.reads(A[vii, vjj])
                     T.writes(C[vii, vjj])
                     C[vii, vjj] = A[vii, vjj]
 
-    @T.prim_func
+    @T.prim_func(s_tir=True)
     def wmma_load_impl(a: T.handle, c: T.handle) -> None:
         A = T.match_buffer(
             a,
@@ -127,17 +127,13 @@ def register_wmma_load_intrin(
             strides=stride_dst,
         )
 
-        with T.block("root"):
+        with T.sblock("root"):
             T.reads(A[0 : read_range[0], 0 : read_range[1]])
             T.writes(C[0 : write_range[0], 0 : write_range[1]])
 
-            warp_index = T.if_then_else(
-                layout == "row_major",
-                T.floordiv(
-                    T.floormod(C.elem_offset, warp_m * wmma_m * wmma_k * rstep),
-                    wmma_m * wmma_k,
-                ),
-                T.floordiv(T.floormod(C.elem_offset, warp_n * wmma_n * rstep), wmma_n),
+            # Match the fragment numbering used by MMA and accumulator stores.
+            warp_index = T.floordiv(C.elem_offset, wmma_m * wmma_n) + T.floordiv(
+                T.floormod(C.elem_offset, wmma_m * wmma_n), wmma_n
             )
 
             T.evaluate(
@@ -149,7 +145,7 @@ def register_wmma_load_intrin(
                     T.int32(warp_index),
                     A.access_ptr("r"),
                     T.int32(stride_src[0]),
-                    T.StringImm(layout),
+                    layout,
                     dtype=data_dtype,
                 )
             )
@@ -171,7 +167,7 @@ def register_wmma_fill_intrin(
     if TensorIntrin.get(intrin_name, allow_missing=True):
         return intrin_name
 
-    @T.prim_func
+    @T.prim_func(s_tir=True)
     def wmma_fill_desc(a: T.handle) -> None:
         A = T.match_buffer(
             a,
@@ -182,16 +178,16 @@ def register_wmma_fill_intrin(
             offset_factor=8,
             strides=strides_C,
         )
-        with T.block("root"):
+        with T.sblock("root"):
             T.reads()
             T.writes(A[0:wmma_m, 0:wmma_n])
             for i, j in T.grid(wmma_m, wmma_n):
-                with T.block("fill"):
+                with T.sblock("fill"):
                     vii, vjj = T.axis.remap("SS", [i, j])
                     T.writes(A[vii, vjj])
                     A[vii, vjj] = T.cast(0, dtype)
 
-    @T.prim_func
+    @T.prim_func(s_tir=True)
     def wmma_fill_impl(a: T.handle) -> None:
         A = T.match_buffer(
             a,
@@ -202,7 +198,7 @@ def register_wmma_fill_intrin(
             offset_factor=8,
             strides=strides_C,
         )
-        with T.block("root"):
+        with T.sblock("root"):
             T.reads()
             T.writes(A[0:wmma_m, 0:wmma_n])
 
@@ -267,7 +263,7 @@ def register_wmma_intrin(
     if TensorIntrin.get(intrin_name, allow_missing=True):
         return intrin_name
 
-    @T.prim_func
+    @T.prim_func(s_tir=True)
     def wmma_gemm_desc(a: T.handle, b: T.handle, c: T.handle) -> None:
         A_buffer = T.match_buffer(
             a,
@@ -297,7 +293,7 @@ def register_wmma_intrin(
             strides=strides_C,
         )
 
-        with T.block("root"):
+        with T.sblock("root"):
             T.reads(
                 C_buffer[0:wmma_m, 0:wmma_n],
                 A_buffer[0:wmma_m, 0:wmma_k],
@@ -305,7 +301,7 @@ def register_wmma_intrin(
             )
             T.writes(C_buffer[0:wmma_m, 0:wmma_n])
             for i, j, k in T.grid(wmma_m, wmma_n, wmma_k):
-                with T.block("wmma"):
+                with T.sblock("wmma"):
                     vii, vjj, vkk = T.axis.remap("SSR", [i, j, k])
                     T.reads(C_buffer[vii, vjj], A_buffer[vii, vkk], B_buffer[vkk, vjj])
                     T.writes(C_buffer[vii, vjj])
@@ -315,7 +311,7 @@ def register_wmma_intrin(
                         C_buffer[vii, vjj] + A_buffer[vii, vkk] * B_buffer[vkk, vjj]
                     )
 
-    @T.prim_func
+    @T.prim_func(s_tir=True)
     def wmma_gemm_impl(a: T.handle, b: T.handle, c: T.handle) -> None:
         A_buffer = T.match_buffer(
             a,
@@ -345,7 +341,7 @@ def register_wmma_intrin(
             strides=strides_C,
         )
 
-        with T.block("root"):
+        with T.sblock("root"):
             T.reads(
                 C_buffer[0:wmma_m, 0:wmma_n],
                 A_buffer[0:wmma_m, 0:wmma_k],
@@ -414,7 +410,7 @@ def register_wmma_store_intrin(
     if TensorIntrin.get(intrin_name, allow_missing=True):
         return intrin_name
 
-    @T.prim_func
+    @T.prim_func(s_tir=True)
     def wmma_store_desc(a: T.handle, c: T.handle) -> None:
         A = T.match_buffer(
             a,
@@ -435,17 +431,17 @@ def register_wmma_store_intrin(
             strides=strides_dst,
         )
 
-        with T.block("root"):
+        with T.sblock("root"):
             T.reads(A[0 : read_range[0], 0 : read_range[1]])
             T.writes(C[0 : write_range[0], 0 : write_range[1]])
             for i, j in T.grid(buffer_shape[0], buffer_shape[1]):
-                with T.block("store"):
+                with T.sblock("store"):
                     vii, vjj = T.axis.remap("SS", [i, j])
                     T.reads(A[vii, vjj])
                     T.writes(C[vii, vjj])
                     C[vii, vjj] = A[vii, vjj]
 
-    @T.prim_func
+    @T.prim_func(s_tir=True)
     def wmma_store_impl(a: T.handle, c: T.handle) -> None:
         A = T.match_buffer(
             a,
@@ -466,7 +462,7 @@ def register_wmma_store_intrin(
             strides=strides_dst,
         )
 
-        with T.block("root"):
+        with T.sblock("root"):
             T.reads(A[0 : read_range[0], 0 : read_range[1]])
             T.writes(C[0 : write_range[0], 0 : write_range[1]])
 
@@ -483,7 +479,7 @@ def register_wmma_store_intrin(
                     T.int32(warp_index),
                     C.access_ptr("w"),
                     T.int32(strides_dst[0]),
-                    T.StringImm("row_major"),
+                    "row_major",
                     dtype=out_dtype,
                 )
             )

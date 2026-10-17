@@ -32,7 +32,7 @@ class RuntimeMod:
         self.compute_pattern = compute_pattern
 
         # Other attributes initialized in member functions
-        self.sch: tvm.tir.Schedule = None
+        self.sch: tvm.s_tir.Schedule = None
         self.ir_mod: tvm.IRModule = None
         self.runtime_mod: Module = None
         self.timer_mod: Callable[..., tvm.runtime.module.BenchmarkResult] = None
@@ -68,22 +68,22 @@ class RuntimeMod:
         """
         Build the runtime module with CUDA Core
         """
-        self.sch: tvm.tir.Schedule = self.operator.apply_without_tc(
+        self.sch: tvm.s_tir.Schedule = self.operator.apply_without_tc(
             self.compute_pattern[1], self.compute_pattern[0], [1, 1, 1]
         )
-        self.runtime_mod: Module = tvm.build(self.sch.mod, target="cuda")
+        self.runtime_mod: Module = tvm.compile(self.sch.mod, target="cuda", tir_pipeline="s_tir").mod
         self.timer_mod = self.runtime_mod.time_evaluator(
-            self.runtime_mod.entry_name, tvm.cuda(0)
+            "main", tvm.cuda(0)
         )
 
     def build_with_tc(self):
         """
         Build the runtime module with Tensor Core
         """
-        self.sch: tvm.tir.Schedule = self.operator.apply_with_tc(self.compute_pattern)
-        self.runtime_mod: Module = tvm.build(self.sch.mod, target="cuda")
+        self.sch: tvm.s_tir.Schedule = self.operator.apply_with_tc(self.compute_pattern)
+        self.runtime_mod: Module = tvm.compile(self.sch.mod, target="cuda", tir_pipeline="s_tir").mod
         self.timer_mod = self.runtime_mod.time_evaluator(
-            self.runtime_mod.entry_name, tvm.cuda(0)
+            "main", tvm.cuda(0)
         )
 
     def build_flash_attn(self):
@@ -114,7 +114,7 @@ class RuntimeMod:
         """
         self.get_mod().show(black_format=False)
         if not self.is_kernel_op:
-            cuda = self.runtime_mod.imported_modules[0].get_source()
+            cuda = self.runtime_mod.imports[0].inspect_source()
             print(cuda)
 
     def get_mod(self):
@@ -144,9 +144,9 @@ class RuntimeMod:
         dtype = self.operator.dtype
 
         ctx = tvm.cuda(0)
-        cuda_a = tvm.nd.array(np.random.rand(M, K).astype(dtype), ctx)
-        cuda_b = tvm.nd.array(np.random.rand(K, N).astype(dtype), ctx)
-        cuda_c = tvm.nd.array(np.zeros((M, N)).astype(dtype), ctx)
+        cuda_a = tvm.runtime.tensor(np.random.rand(M, K).astype(dtype), ctx)
+        cuda_b = tvm.runtime.tensor(np.random.rand(K, N).astype(dtype), ctx)
+        cuda_c = tvm.runtime.tensor(np.zeros((M, N)).astype(dtype), ctx)
 
         t = self.timer_mod(cuda_a, cuda_b, cuda_c).mean
         self.execution_time = t
@@ -166,7 +166,7 @@ class RuntimeMod:
         B, H, S_q, S_kv, D = op.shape
         q, k, v = make_qkv(B, H, S_q, S_kv, D)
         o = torch.empty_like(q)
-        args = [tvm.nd.from_dlpack(x) for x in (q, k, v, o)]
+        args = [tvm.runtime.from_dlpack(x) for x in (q, k, v, o)]
         func = self.runtime_mod["main"]
 
         if verify:
@@ -201,7 +201,7 @@ class RuntimeMod:
         op = self.operator
         inputs = op.make_inputs()
         out = op.make_output(inputs) if hasattr(op, "make_output") else torch.empty_like(inputs[0])
-        args = [tvm.nd.from_dlpack(x) for x in op.kernel_args(inputs, out)]
+        args = [tvm.runtime.from_dlpack(x) for x in op.kernel_args(inputs, out)]
         func = self.runtime_mod["main"]
 
         if verify:

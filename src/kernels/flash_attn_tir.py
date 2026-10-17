@@ -18,9 +18,10 @@ from contextlib import ExitStack
 from dataclasses import dataclass, asdict
 
 import tvm
-from tvm import tir
+from tvm import tirx as tir
 from tvm.script.ir_builder import IRBuilder
-from tvm.script.ir_builder import tir as T
+from tvm.tirx.script import builder as T
+from tvm.script import tirx as Tx
 
 from kernels.build import FAST_MATH_OPTIONS, build_kernel, cuda_target  # noqa: F401
 
@@ -129,9 +130,9 @@ def make_flash_attn_fwd(
         return base + row * LD + col
 
     with IRBuilder() as ib:
-        with T.prim_func():
+        with T.prim_func(s_tir=True):
             T.func_name("main")
-            T.func_attr({"global_symbol": "main", "tir.noalias": True})
+            T.func_attr({"global_symbol": "main", "tirx.noalias": True})
             q = T.arg("q", T.handle())
             k = T.arg("k", T.handle())
             v = T.arg("v", T.handle())
@@ -162,12 +163,12 @@ def make_flash_attn_fwd(
                 with ExitStack() as stack:
 
                     def local(name, n, dtype):
-                        buf = stack.enter_context(T.decl_buffer((n,), dtype, scope="local"))
+                        buf = T.decl_buffer((n,), dtype, scope="local")
                         return IRBuilder.name(name, buf)
 
                     smem = IRBuilder.name(
                         "smem",
-                        stack.enter_context(T.decl_buffer((SMEM,), "float16", scope="shared.dyn")),
+                        T.decl_buffer((SMEM,), "float16", scope="shared.dyn"),
                     )
                     # K/V (and Q when re-read from smem) fragments are double-buffered so
                     # that the ldmatrix of step i+1 is issued before the MMAs of step i.
@@ -182,9 +183,7 @@ def make_flash_attn_fwd(
                     tmp = local("tmp", 4, "float32")
                     O_flat = IRBuilder.name(
                         "O_flat",
-                        stack.enter_context(
-                            T.decl_buffer((B * H * S_q * D,), "float16", data=O.data)
-                        ),
+                        T.decl_buffer((B * H * S_q * D,), "float16", data=O.data),
                     )
 
                     def store(buf, idx, val):
@@ -194,10 +193,10 @@ def make_flash_attn_fwd(
                         T.evaluate(T.tvm_storage_sync("shared"))
 
                     def commit():
-                        T.evaluate(T.ptx_commit_group(dtype=""))
+                        T.evaluate(Tx.ptx.cp.async_.commit_group())
 
                     def wait(n):
-                        T.evaluate(T.ptx_wait_group(n, dtype=""))
+                        T.evaluate(Tx.ptx.cp.async_.wait_group(n))
 
                     def shfl_xor(x, m):
                         return T.call_extern("float32", "__shfl_xor_sync", full_mask, x, m, 32)
@@ -209,7 +208,7 @@ def make_flash_attn_fwd(
                         for it in range(rows * CPR // NT):
                             row = it * rows_per_it + r
                             T.evaluate(
-                                T.ptx_cp_async(
+                                Tx.s_tir.cp_async_raw.legacy(
                                     smem.data,
                                     soff(s_base, row, cc * 8, row_mod8=(it * rows_per_it + r) % 8),
                                     G.data,
@@ -223,7 +222,7 @@ def make_flash_attn_fwd(
                         row = warp * WM + mt * 16 + lane % 16
                         col = kt * 16 + (lane // 16) * 8
                         T.evaluate(
-                            T.ptx_ldmatrix(
+                            Tx.ptx_legacy.ldmatrix(
                                 False, 4, ".b16", q_frag.data, dst_off, smem.data,
                                 soff(Q_OFF, row, col, row_mod8=lane % 8), dtype="float16",
                             )
@@ -231,7 +230,7 @@ def make_flash_attn_fwd(
 
                     def mma(a, aoff, b, boff, c, coff):
                         T.evaluate(
-                            T.ptx_mma(
+                            Tx.ptx_legacy.mma(
                                 "m16n8k16", "row", "col", "fp16", "fp16", "fp32",
                                 a.data, aoff, b.data, boff, c.data, coff, False,
                                 dtype="float32",
@@ -266,7 +265,7 @@ def make_flash_attn_fwd(
                                     row = p * 16 + (lane // 16) * 8 + lane % 8
                                     col = kt * 16 + ((lane // 8) % 2) * 8
                                     T.evaluate(
-                                        T.ptx_ldmatrix(
+                                        Tx.ptx_legacy.ldmatrix(
                                             False, 4, ".b16", k_frag.data, buf * 8, smem.data,
                                             soff(k_base, row, col, row_mod8=lane % 8),
                                             dtype="float16",
@@ -298,7 +297,7 @@ def make_flash_attn_fwd(
                                     row = kk * 16 + (mi % 2) * 8 + lane % 8
                                     col = p * 16 + (mi // 2) * 8
                                     T.evaluate(
-                                        T.ptx_ldmatrix(
+                                        Tx.ptx_legacy.ldmatrix(
                                             True, 4, ".b16", v_frag.data, buf * 8, smem.data,
                                             soff(v_base, row, col, row_mod8=lane % 8),
                                             dtype="float16",

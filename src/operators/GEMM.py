@@ -3,7 +3,7 @@ GEMM operator implementation
 """
 
 import tvm
-from tvm.script import tir as T
+from tvm.script import tirx as T
 from tvm.script import ir as I
 from operators.Op import Operator
 from utils.helper import dim3
@@ -13,14 +13,14 @@ from utils.tensor_core import schedule_tensorcore
 def create_gemm_ir_module(M: int, N: int, K: int, dtype: str):
     @I.ir_module
     class GEMM_IRModule:
-        @T.prim_func
+        @T.prim_func(s_tir=True)
         def main(a: T.handle, b: T.handle, c: T.handle):
-            T.func_attr({"global_symbol": "main", "tir.noalias": True})
+            T.func_attr({"global_symbol": "main", "tirx.noalias": True})
             A = T.match_buffer(a, [M, K], dtype=dtype)
             B = T.match_buffer(b, [K, N], dtype=dtype)
             C = T.match_buffer(c, [M, N], dtype=dtype)
             for i, j, k in T.grid(M, N, K):
-                with T.block("C"):
+                with T.sblock("C"):
                     vi, vj, vk = T.axis.remap("SSR", [i, j, k])
                     with T.init():
                         C[vi, vj] = T.cast(0.0, dtype)
@@ -54,7 +54,7 @@ class GEMM(Operator):
             M * N * K * 2
         )  # May need a pass to collect the number of flops.
         self.ir_module = create_gemm_ir_module(self.M, self.N, self.K, dtype)
-        self.sch = tvm.tir.Schedule(self.ir_module)
+        self.sch = tvm.s_tir.Schedule(self.ir_module)
         super().__init__(name="GEMM")
 
     def apply_without_tc(
@@ -74,7 +74,7 @@ class GEMM(Operator):
         BK = rtile0[2]
 
         sch = self.sch
-        block_C = sch.get_block("C")
+        block_C = sch.get_sblock("C")
         block_shared_A = sch.cache_read(block_C, 0, "shared")
         block_shared_B = sch.cache_read(block_C, 1, "shared")
         block_local_C = sch.cache_write(block_C, 0, "local")

@@ -14,7 +14,7 @@ from . import (
     getReduceLoopRVs,
     calculate_factors,
 )
-from tvm.tir import Schedule
+from tvm.s_tir import Schedule
 from typing import Tuple, Optional
 # from config import rProg, rTile
 
@@ -39,20 +39,20 @@ def schedule_tensorcore(
     out_dtype = output_dtype
 
     # Explicit memory access
-    block_compute = s.get_block("C")
-    AS: tvm.tir.BlockRV = s.cache_read(
+    block_compute = s.get_sblock("C")
+    AS: tvm.s_tir.schedule.SBlockRV = s.cache_read(
         block_compute, read_buffer_index=0, storage_scope="shared"
     )
-    BS: tvm.tir.BlockRV = s.cache_read(
+    BS: tvm.s_tir.schedule.SBlockRV = s.cache_read(
         block_compute, read_buffer_index=1, storage_scope="shared"
     )
-    AF: tvm.tir.BlockRV = s.cache_read(
+    AF: tvm.s_tir.schedule.SBlockRV = s.cache_read(
         block_compute, read_buffer_index=0, storage_scope="wmma.matrix_a"
     )
-    BF: tvm.tir.BlockRV = s.cache_read(
+    BF: tvm.s_tir.schedule.SBlockRV = s.cache_read(
         block_compute, read_buffer_index=1, storage_scope="wmma.matrix_b"
     )
-    CF: tvm.tir.BlockRV = s.cache_write(
+    CF: tvm.s_tir.schedule.SBlockRV = s.cache_write(
         block_compute, write_buffer_index=0, storage_scope="wmma.accumulator"
     )
 
@@ -152,7 +152,7 @@ def schedule_tensorcore(
     if verbose:
         s.mod.show()
 
-    block_compute = s.get_block("C")
+    block_compute = s.get_sblock("C")
     s.compute_at(block_compute, nn)
     warp_i, warp_j = getSpatialLoopRVs(s, block_compute)
     warp_i, _ii = s.split(warp_i, factors=calculate_factors(s, warp_i, wmma_m))
@@ -281,6 +281,8 @@ def schedule_tensorcore(
     if verbose:
         s.mod.show()
 
+    # B is stored as [K, N] in row-major shared memory; the WMMA fragment
+    # must use that physical layout as well. A col-major load transposes B.
     intrin_name = register_wmma_load_intrin(
         (wmma_m, wmma_n, wmma_k),
         (warp_row_tiles, warp_col_tiles),
@@ -289,7 +291,7 @@ def schedule_tensorcore(
         BF_stride,
         BS_stride,
         "wmma.matrix_b",
-        "col_major",
+        "row_major",
         data_dtype,
     )
     s.tensorize(i_ii, intrin_name)

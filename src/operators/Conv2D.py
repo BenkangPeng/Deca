@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import tvm
 from tvm.script import ir as I
-from tvm.script import tir as T
+from tvm.script import tirx as T
 
 from operators.Op import Operator
 
@@ -57,23 +57,23 @@ def create_conv2d_nchw_ir_module(
 
     @I.ir_module
     class Conv2D_NCHW_IRModule:
-        @T.prim_func
+        @T.prim_func(s_tir=True)
         def main(a: T.handle, w: T.handle, y: T.handle):
-            T.func_attr({"global_symbol": "main", "tir.noalias": True})
+            T.func_attr({"global_symbol": "main", "tirx.noalias": True})
             A = T.match_buffer(a, (N, C, H, W), dtype=dtype)
             Wt = T.match_buffer(w, (K, C, R, S), dtype=dtype)
             Y = T.match_buffer(y, (N, K, OH, OW), dtype=dtype)
 
             for n, k, oh, ow, rc, rr, rs in T.grid(N, K, OH, OW, C, R, S):
-                with T.block("Y"):
+                with T.sblock("Y"):
                     vn, vk, voh, vow, vrc, vrr, vrs = T.axis.remap(
                         "SSSSRRR", [n, k, oh, ow, rc, rr, rs]
                     )
                     with T.init():
                         Y[vn, vk, voh, vow] = T.cast(0.0, dtype)
 
-                    ih = voh * stride_h + vrr * dil_h - pad_h
-                    iw = vow * stride_w + vrs * dil_w - pad_w
+                    ih = T.bind(voh * stride_h + vrr * dil_h - pad_h)
+                    iw = T.bind(vow * stride_w + vrs * dil_w - pad_w)
                     if (0 <= ih) and (ih < H) and (0 <= iw) and (iw < W):
                         Y[vn, vk, voh, vow] = (
                             Y[vn, vk, voh, vow] + A[vn, vrc, ih, iw] * Wt[vk, vrc, vrr, vrs]
@@ -137,12 +137,12 @@ class Conv2D(Operator):
             dilation=self.dilation,
             dtype=self.dtype,
         )
-        self.sch = tvm.tir.Schedule(self.ir_module)
+        self.sch = tvm.s_tir.Schedule(self.ir_module)
         super().__init__(name=name)
 
     def apply_without_tc(
         self, rtile0: list | tuple, rtile1: list | tuple, rtile2: list | tuple
-    ) -> tvm.tir.Schedule:
+    ) -> tvm.s_tir.Schedule:
         # Keep a valid schedule object; caller may further tune/transform it.
         return self.sch
 
