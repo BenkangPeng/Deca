@@ -6,6 +6,7 @@ from typing import Tuple
 
 from arch.RTX4090 import RTX4090
 from arch.H100 import H100
+from arch.H20 import H20
 from arch.V100 import V100
 
 from tvm.s_tir import Schedule
@@ -52,6 +53,10 @@ class GPUDetector:
     # GPU model mapping table
     GPU_MODEL_MAP = {
         "NVIDIA H100 80GB HBM3": H100,
+        "NVIDIA H20": H20,
+        "NVIDIA H20-3e": H20,
+        "NVIDIA H20 96GB": H20,
+        "NVIDIA H20 SXM5 96GB": H20,
         "NVIDIA GeForce RTX 4090": RTX4090,
         "Quadro GV100": V100,
     }
@@ -86,7 +91,10 @@ class GPUDetector:
     def create_gpu_instance(cls, verbose=True):
         """Create corresponding GPU class instance"""
         gpu_class = cls.detect_gpu(verbose=verbose)
-        return gpu_class()
+        gpu = gpu_class()
+        if isinstance(gpu, H20):
+            gpu.configure_device(tvm.cuda(0))
+        return gpu
 
 
 def getSpecifiedLoopRVs(
