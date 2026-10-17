@@ -50,13 +50,31 @@ def parse_shape(s):
     return tuple(s)
 
 
-def build_all(shape, configs, softmax_scale, causal, arch_str, jobs):
-    """Compiles configs in parallel; returns {cfg: path to exported library}."""
+def build_all(shape, configs, softmax_scale, causal, arch_str, jobs, failures=None):
+    """Compile kernels, retaining original exceptions for the final diagnostic."""
     from kernels.flash_attn_tir import build_flash_attn_to_file
 
+    failures = {} if failures is None else failures
     tmpdir = tempfile.mkdtemp(prefix="fa_tune_")
     path_of = {cfg: os.path.join(tmpdir, f"cfg{i}.so") for i, cfg in enumerate(configs)}
     paths, crashed = {}, []
+
+    def build_serial(cfg):
+        try:
+            paths[cfg] = build_flash_attn_to_file(
+                shape, cfg, softmax_scale, arch_str, path_of[cfg], causal
+            )
+            failures.pop(cfg, None)
+        except Exception as e:  # noqa: BLE001
+            failures[cfg] = e
+            print(f"{cfg} failed to build: {type(e).__name__}: {str(e)[-200:]}", flush=True)
+
+    # One job really runs in this process, allowing direct compiler debugging.
+    if jobs == 1:
+        for cfg in configs:
+            build_serial(cfg)
+        return paths
+
     with ProcessPoolExecutor(max_workers=jobs, mp_context=mp.get_context("spawn")) as pool:
         futures = {
             pool.submit(build_flash_attn_to_file, shape, cfg, softmax_scale, arch_str, path_of[cfg], causal
@@ -70,21 +88,34 @@ def build_all(shape, configs, softmax_scale, causal, arch_str, jobs):
             except BrokenProcessPool:
                 crashed.append(cfg)
             except Exception as e:  # noqa: BLE001
-                print(f"{cfg} failed to build: {str(e)[-200:]}", flush=True)
+                failures[cfg] = e
+                print(f"{cfg} failed to build: {type(e).__name__}: {str(e)[-200:]}", flush=True)
     # A dead worker breaks the whole pool; rebuild the affected configs serially.
     for cfg in crashed:
-        try:
-            paths[cfg] = build_flash_attn_to_file(
-                shape, cfg, softmax_scale, arch_str, path_of[cfg], causal
-            )
-        except Exception as e:  # noqa: BLE001
-            print(f"{cfg} failed to build: {str(e)[-200:]}", flush=True)
+        build_serial(cfg)
     return paths
+
+
+def require_torch_cuda():
+    """Fail before compilation when PyTorch cannot use the visible GPU."""
+    import torch
+
+    try:
+        torch.cuda.init()
+    except Exception as e:
+        raise RuntimeError(
+            f"PyTorch CUDA initialization failed in {sys.executable}: "
+            f"PyTorch {torch.__version__}, built for CUDA {torch.version.cuda}. "
+            "Install a CUDA-enabled PyTorch build compatible with the GPU driver. "
+            "TVM detecting the GPU does not establish that PyTorch can use it. "
+            f"Original error: {e}"
+        ) from e
 
 
 def tune(args, shape, arch, arch_str, log):
     import torch
     import tvm
+    require_torch_cuda()
     from Solver import solve_flash_attn
     from cost_model.CostModel import rank_fa_configs
     from kernels.attn_bench import bench_interleaved, make_qkv, sdpa_flash
@@ -99,10 +130,14 @@ def tune(args, shape, arch, arch_str, log):
     ranked = rank_fa_configs(configs, arch, shape, causal=args.causal, top_n=args.top_n or None)
     print(f"Find {len(configs)} FlashAttention configs, measuring {len(ranked)}", flush=True)
 
-    paths = build_all(shape, ranked, op.softmax_scale, args.causal, arch_str, args.jobs)
+    if not ranked:
+        raise RuntimeError(f"FlashAttention solver produced no configurations for {shape} on {arch.name}")
+    build_failures = {}
+    paths = build_all(shape, ranked, op.softmax_scale, args.causal, arch_str, args.jobs,
+                      failures=build_failures)
     compile_time = time.time() - start
 
-    res = []
+    res, validation_failures = [], {}
     for cfg in ranked:
         if cfg not in paths:
             continue
@@ -113,10 +148,22 @@ def tune(args, shape, arch, arch_str, log):
             print(rt.record, flush=True)
             res.append((rt.throughput, cfg, rt.execution_time, rt.max_error))
         except Exception as e:  # noqa: BLE001
-            print(f"{cfg} is not a valid config: {str(e)[-200:]}", flush=True)
+            validation_failures[cfg] = e
+            print(f"{cfg} is not a valid config: {type(e).__name__}: {str(e)[-200:]}", flush=True)
     end = time.time()
     if not res:
-        raise RuntimeError(f"no valid FlashAttention config for {shape}")
+        stage = "load/run/verification" if validation_failures else "build"
+        failures = validation_failures or build_failures
+        cfg, cause = next(iter(failures.items()))
+        raise RuntimeError(
+            f"no valid FlashAttention config for {shape}: "
+            f"{len(configs)} solver candidates, {len(ranked)} selected, {len(paths)} built, "
+            f"{len(validation_failures)} failed load/run/verification. "
+            f"First {stage} failure for {cfg}: {type(cause).__name__}: {str(cause)[-1000:]}\n"
+            f"Environment: Python={sys.executable}, TVM={tvm.__version__}, "
+            f"PyTorch={torch.__version__}, GPU={arch.name}, target={arch_str}. "
+            "The original exception is chained below; --jobs 1 compiles in the main process."
+        ) from cause
 
     res.sort(key=lambda x: x[0], reverse=True)
     finalists = res[: args.finalists]
