@@ -131,13 +131,9 @@ def register_wmma_load_intrin(
             T.reads(A[0 : read_range[0], 0 : read_range[1]])
             T.writes(C[0 : write_range[0], 0 : write_range[1]])
 
-            warp_index = T.if_then_else(
-                layout == "row_major",
-                T.floordiv(
-                    T.floormod(C.elem_offset, warp_m * wmma_m * wmma_k * rstep),
-                    wmma_m * wmma_k,
-                ),
-                T.floordiv(T.floormod(C.elem_offset, warp_n * wmma_n * rstep), wmma_n),
+            # Match the fragment numbering used by MMA and accumulator stores.
+            warp_index = T.floordiv(C.elem_offset, wmma_m * wmma_n) + T.floordiv(
+                T.floormod(C.elem_offset, wmma_m * wmma_n), wmma_n
             )
 
             T.evaluate(

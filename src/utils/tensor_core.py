@@ -281,6 +281,8 @@ def schedule_tensorcore(
     if verbose:
         s.mod.show()
 
+    # B is stored as [K, N] in row-major shared memory; the WMMA fragment
+    # must use that physical layout as well. A col-major load transposes B.
     intrin_name = register_wmma_load_intrin(
         (wmma_m, wmma_n, wmma_k),
         (warp_row_tiles, warp_col_tiles),
@@ -289,7 +291,7 @@ def schedule_tensorcore(
         BF_stride,
         BS_stride,
         "wmma.matrix_b",
-        "col_major",
+        "row_major",
         data_dtype,
     )
     s.tensorize(i_ii, intrin_name)
