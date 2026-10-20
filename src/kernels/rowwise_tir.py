@@ -66,9 +66,20 @@ def num_chunks(cfg: RowConfig, N: int) -> int:
 
 
 def est_regs_per_thread(cfg: RowConfig, N: int, op: str) -> int:
-    """Rough 32-bit register estimate: cached row (16-bit values) + bookkeeping."""
+    """32-bit register estimate of the `E` cached elements per thread + bookkeeping.
+
+    Fitted to ptxas (sm_90, 16-bit dtypes): nvcc keeps part of the row as fp32
+    across the reduction phases, about 0.75 registers per element. A row owned
+    by a single warp has no block barrier between the phases, so the fp32
+    copies of the whole row stay live and the usage grows to E + E^2 / 256
+    (e.g. 80 registers at E = 64, 192 at E = 128 instead of 64 and 88).
+    """
     cached = num_chunks(cfg, N) if cfg.mode == "reg" else cfg.unroll
-    regs = cached * cfg.vec // 2 + 24
+    elems = cached * cfg.vec
+    if cfg.threads_per_row == 32:
+        regs = elems + elems * elems // 256 + 16
+    else:
+        regs = elems * 3 // 4 + 16
     if op == "rmsnorm":
         regs += cfg.vec // 2
     return regs

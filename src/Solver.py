@@ -433,9 +433,15 @@ def solve_rowwise(
 
     span = tpr * vec
     s.add(chunks == UDiv(n + span - 1, span))
-    # Registers: cached 16-bit values (2 per register) + bookkeeping (+ weight chunk).
-    cached = If(mode == 0, chunks, unroll)
-    regs = cached * UDiv(vec * type_size, 4) + 24 + (UDiv(vec, 2) if op == "rmsnorm" else 0)
+    # Registers of the cached elements + bookkeeping (+ weight chunk), as in
+    # `rowwise_tir.est_regs_per_thread`: single-warp rows keep fp32 copies of
+    # the whole row live across the reduction phases.
+    elems = If(mode == 0, chunks, unroll) * vec
+    regs = If(
+        tpr == 32,
+        elems + UDiv(elems * elems, 256) + 16,
+        UDiv(elems * 3, 4) + 16,
+    ) + (UDiv(vec, 2) if op == "rmsnorm" else 0)
     s.add(ULE(regs, 255), ULE(regs * threads, arch.max_registers_per_sm))
     # reg mode is fully unrolled; twopass needs at least one full loop iteration.
     s.add(Implies(mode == 0, And(unroll == 1, ULE(chunks, 32))))
