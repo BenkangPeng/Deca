@@ -112,8 +112,10 @@ class RTX4090(Arch):
         self.peak_mma_sync_flops = 165200
         # mma.sync with FP16 accumulation runs at the full rate on GeForce Ada.
         self.peak_mma_sync_f16acc_flops = 330300
+        # SM boost clock (Hz), used for per-cycle estimates in the cost model.
+        self.sm_clock_hz = 2.52e9
         # Shared memory delivers 128 B/clk/SM at the 2520 MHz boost clock.
-        self.smem_bw_per_sm = 128 * 2.52e9
+        self.smem_bw_per_sm = 128 * self.sm_clock_hz
         # Approximate achievable L2 bandwidth (GB/s).
         self.l2_bw = 5000
         # Peak DRAM bandwidth (GB/s, GDDR6X 384-bit x 21 Gbps) and L2 capacity (bytes).

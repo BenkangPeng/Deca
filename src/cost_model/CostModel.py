@@ -46,6 +46,8 @@ def fa_score(cfg, arch: Arch, shape, causal: bool = False) -> float:
     - O rescaling in the online softmax costs WM*D FP32 ops per KV tile
     - wave efficiency: the tail of the last wave is wasted
     - latency hiding: resident warps per SM, saturating at 8 (two per sub-core)
+    - block barriers: hidden better by several smaller resident CTAs
+      (`arch.fa_cta_sync_penalty`)
     - pipelining: a single K/V buffer already overlaps the K(j+1)/V(j) loads with
       compute; deeper rings mostly cost shared memory and slot arithmetic
     - padding (no swizzle) wastes shared memory and address bandwidth
@@ -75,6 +77,9 @@ def fa_score(cfg, arch: Arch, shape, causal: bool = False) -> float:
 
     pipe = 1.0 - 0.02 * (cfg.stages - 1)
     layout = 1.0 if cfg.swizzle else 0.96
+    # The block barriers of every KV step stall all warps of a CTA; more
+    # (smaller) resident CTAs overlap them (GPU dependent, 0 unless measured).
+    sync = 1.0 / (1.0 + getattr(arch, "fa_cta_sync_penalty", 0.0) * cfg.num_warps / 4 / ctas)
 
     regs = est_regs_per_thread(cfg, D)
     spill = 1.0 if regs <= 255 else max(0.5, 1.0 - 0.002 * (regs - 255))
@@ -85,7 +90,7 @@ def fa_score(cfg, arch: Arch, shape, causal: bool = False) -> float:
         computed = sum(-(-(i + 1) * cfg.Br // cfg.Bc) * cfg.Bc for i in range(nq)) * cfg.Br
         useful = S_q * (S_q + 1) / 2 / computed
 
-    return wave_eff * hiding * pipe * layout * spill * useful / (t_flop / t_mma)
+    return wave_eff * hiding * pipe * layout * sync * spill * useful / (t_flop / t_mma)
 
 
 def rank_fa_configs(configs, arch: Arch, shape, causal: bool = False, top_n: int | None = None):
@@ -114,7 +119,8 @@ def rowwise_score(cfg, arch: Arch, op: str, M: int, N: int, type_size: int = 2) 
 
     - memory parallelism: bytes of loads in flight per SM (every chunk of the
       row is requested up front in `reg` mode, `unroll` chunks in `twopass`)
-      against Little's law, DRAM bandwidth per SM x ~800 ns of latency
+      against Little's law, DRAM bandwidth per SM x latency under load
+      (`arch.dram_latency_s`, ~800 ns by default)
     - phases: a CTA loads, reduces, then stores; with few resident CTAs per SM
       the reduction/store phase is not hidden by the loads of other CTAs
     - wave efficiency of the grid of M / rows_per_block CTAs
@@ -129,7 +135,7 @@ def rowwise_score(cfg, arch: Arch, op: str, M: int, N: int, type_size: int = 2) 
     chunks = num_chunks(cfg, N)
     per_thread = (chunks if cfg.mode == "reg" else cfg.unroll) * cfg.vec * type_size
     in_flight = ctas * cfg.threads * per_thread
-    need = arch.dram_bw * 1e9 / arch.sm_nums * 800e-9
+    need = arch.dram_bw * 1e9 / arch.sm_nums * getattr(arch, "dram_latency_s", 800e-9)
     mem = min(1.0, in_flight / need)
 
     phase = 1.0 - 0.35 / ctas if cfg.mode == "reg" else 1.0 - 0.1 / ctas
@@ -212,7 +218,8 @@ def gemm_tc_score(cfg, arch: Arch, M: int, N: int, K: int) -> float:
     Then:
     - wave efficiency of the CTA grid; latency hiding by resident warps
     - pipelining: bytes in flight (stages - 1 tiles per CTA) vs. Little's law
-      on the L2 stream, ~1 us of latency
+      on the L2 stream, ~1 us of latency; stages beyond that need are penalized
+      by `arch.gemm_excess_stage_penalty`
     - one block barrier per BK stage, hidden by other resident CTAs
     - ldmatrix issue overhead per MMA (small warp tiles)
     - epilogue: C is written once (fp16, 1 / K bytes per FLOP); direct
@@ -241,11 +248,16 @@ def gemm_tc_score(cfg, arch: Arch, M: int, N: int, K: int) -> float:
 
     # Bytes per SM that must be in flight to cover ~1 us of L2 latency.
     need = l2_bpf / t_mma * 1e-6
-    in_flight = ctas * (cfg.stages - 1) * (cfg.BM + cfg.BN) * cfg.BK * 2
+    stage_bytes = ctas * (cfg.BM + cfg.BN) * cfg.BK * 2
+    in_flight = (cfg.stages - 1) * stage_bytes
     pipe = min(1.0, in_flight / need) ** 0.5
+    # Stages beyond those needed to cover the latency only cost shared memory
+    # and ring-buffer arithmetic (GPU dependent, 0 unless measured).
+    excess = max(0, cfg.stages - 1 - math.ceil(need / stage_bytes))
+    pipe *= 1.0 - getattr(arch, "gemm_excess_stage_penalty", 0.0) * excess
 
     # SM cycles per stage at the tensor-core rate vs. ~120 cycles of barrier.
-    flops_per_cycle = peak * 1e9 / sm / 2.52e9
+    flops_per_cycle = peak * 1e9 / sm / arch.sm_clock_hz
     stage_cycles = 2 * cfg.BM * cfg.BN * cfg.BK / flops_per_cycle
     sync_eff = 1.0 / (1.0 + 120.0 / ctas / stage_cycles)
 

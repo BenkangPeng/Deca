@@ -108,8 +108,10 @@ class H100(Arch):
         # `mma.sync` (no wgmma) reaches roughly 2/3 of the wgmma peak on Hopper.
         self.peak_tc_flops_fp32acc = 989400
         self.peak_mma_sync_flops = 660000
+        # SM boost clock (Hz), used for per-cycle estimates in the cost model.
+        self.sm_clock_hz = 1.98e9
         # Shared memory delivers 128 B/clk/SM at the 1980 MHz boost clock.
-        self.smem_bw_per_sm = 128 * 1.98e9
+        self.smem_bw_per_sm = 128 * self.sm_clock_hz
         # Approximate achievable L2 bandwidth (GB/s).
         self.l2_bw = 10000
         # Peak DRAM bandwidth (GB/s, HBM3 on SXM5) and L2 capacity (bytes).
