@@ -209,18 +209,32 @@ def test_CLayer():
             continue
 
     end_time = time.time()
-    runtime = 2 * M * K * N / res[0][0] / 1e9  # unit: ms
     res.sort(key=lambda x: x[0], reverse=True)
+    runtime = 2 * M * K * N / res[0][0] / 1e9  # unit: ms
+    torch_tflops = torch_matmul_tflops(M, N, K, args.dtype)
     log_path = os.path.join(os.path.dirname(__file__), "deca_performance.log")
     with open(log_path, "a") as f:
         f.write(
-            f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}:\n DeCA: M = {M}, N = {N}, K = {K}, throughput: {res[0][0]} TFLOPS\n, runtime: {runtime} ms, compile time: {end_time - start_time} seconds\n\n"
+            f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} [{arch.name}]:\n DeCA: M = {M}, N = {N}, K = {K}, {args.dtype}, tile config: {res[0][2]}, throughput: {res[0][0]:.2f} TFLOPS, runtime: {runtime:.4f} ms, compile time: {end_time - start_time:.1f} seconds\n"
+            f" torch: {torch_tflops:.2f} TFLOPS, ratio: {res[0][0] / torch_tflops:.3f}\n\n"
         )
 
     print(
-        f"✅✅✅ DeCA: M = {M}, N = {N}, K = {K},\n tile config: {res[0][2]},\n throughput: {res[0][0]} TFLOPS\n, runtime: {runtime} ms, compile time: {end_time - start_time} seconds\n",
+        f"✅✅✅ DeCA: M = {M}, N = {N}, K = {K},\n tile config: {res[0][2]},\n throughput: {res[0][0]:.2f} TFLOPS, runtime: {runtime:.4f} ms, compile time: {end_time - start_time:.1f} seconds\n"
+        f" torch: {torch_tflops:.2f} TFLOPS, ratio: {res[0][0] / torch_tflops:.3f}\n",
         flush=True,
     )
+
+
+def torch_matmul_tflops(M: int, N: int, K: int, dtype: str) -> float:
+    """torch.matmul (cuBLAS) baseline; TF32 is disabled so that fp32 runs on CUDA cores."""
+    import torch
+    from kernels.attn_bench import bench_cuda
+
+    torch.backends.cuda.matmul.allow_tf32 = False
+    a = torch.randn(M, K, device="cuda", dtype=getattr(torch, dtype))
+    b = torch.randn(K, N, device="cuda", dtype=getattr(torch, dtype))
+    return 2 * M * N * K / bench_cuda(lambda: a @ b) / 1e12
 
 
 # test_gemm()
