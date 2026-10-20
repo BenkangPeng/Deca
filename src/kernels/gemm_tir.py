@@ -31,8 +31,9 @@ from tvm.script.ir_builder import tir as T
 from kernels.build import FAST_MATH_OPTIONS, build_kernel
 
 MAX_REGS = 255
-# Opt-in dynamic shared memory per block on sm_80+ GeForce / sm_89 (99 KB).
-MAX_DYN_SMEM = 101376
+# Largest opt-in dynamic shared memory per block of the supported GPUs (Hopper,
+# 227 KB); the solver further limits configs to `arch.max_dyn_smem_per_block`.
+MAX_DYN_SMEM = 232448
 # Padding (halves) of the epilogue staging rows: keeps the fragment writes of
 # the 8 rows of an m16n8 tile in distinct banks.
 EPI_PAD = 8
